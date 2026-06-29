@@ -1,0 +1,504 @@
+// AI World Cup Analyst — Prisma schema (Phase 1: all models present; AI fields populated via seed/mocks).
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums (doc 02)
+// ---------------------------------------------------------------------------
+enum UserRole {
+  USER
+  PREMIUM
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum MatchStatus {
+  SCHEDULED
+  LIVE
+  FINISHED
+  POSTPONED
+  CANCELLED
+}
+
+enum MatchStage {
+  GROUP
+  ROUND_OF_32
+  ROUND_OF_16
+  QUARTER_FINAL
+  SEMI_FINAL
+  THIRD_PLACE
+  FINAL
+  UNKNOWN
+}
+
+enum PlayerPosition {
+  GK
+  DF
+  MF
+  FW
+  UNKNOWN
+}
+
+enum RatingTier {
+  S
+  A_PLUS
+  A
+  B_PLUS
+  B
+  C
+  UNKNOWN
+}
+
+enum TeamRatingTier {
+  S
+  A
+  B
+  C
+  UNKNOWN
+}
+
+enum PlayerRole {
+  STARTER
+  ROTATION
+  SUBSTITUTE
+  IMPACT_PLAYER
+  UNKNOWN
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  UNKNOWN
+}
+
+enum NewsTagType {
+  TEAM
+  PLAYER
+  MATCH
+  TOPIC
+  INJURY
+  TACTIC
+  CONTROVERSY
+  TRANSFER
+  OTHER
+}
+
+enum NewsCategory {
+  MATCH
+  PLAYER
+  INJURY
+  TRANSFER
+  TEAM
+  TACTIC
+  CONTROVERSY
+  TOURNAMENT
+  OTHER
+}
+
+enum TranslationStatus {
+  NONE
+  PENDING
+  DONE
+  FAILED
+}
+
+enum AiProvider {
+  NVIDIA
+  QWEN
+  PROGRAM_RULE
+}
+
+enum AiReportStatus {
+  PENDING
+  DONE
+  FAILED
+}
+
+enum AiEntityType {
+  MATCH
+  TEAM
+  PLAYER
+  NEWS
+  CHAMPION_PREDICTION
+  GENERAL_CHAT
+}
+
+enum ChampionPredictionTriggerType {
+  SYSTEM
+  PREMIUM_USER
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+}
+
+enum JobType {
+  SYNC_FIXTURES
+  SYNC_RESULTS
+  SYNC_TEAMS
+  SYNC_PLAYERS
+  FETCH_NEWS
+  GENERATE_NEWS_SUMMARY
+  GENERATE_MATCH_ANALYSIS
+  GENERATE_PLAYER_RATINGS
+  GENERATE_CHAMPION_PREDICTIONS
+}
+
+// ---------------------------------------------------------------------------
+// Users / Auth
+// ---------------------------------------------------------------------------
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  displayName  String
+  role         UserRole   @default(USER)
+  status       UserStatus @default(ACTIVE)
+
+  profile         UserProfile?
+  favoriteTeams   FavoriteTeam[]
+  favoritePlayers FavoritePlayer[]
+  aiUsageLogs     AiUsageLog[]
+  championRuns    ChampionPredictionRun[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([role])
+  @@index([status])
+}
+
+model UserProfile {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  nickname  String?
+  avatarUrl String?
+  bio       String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Teams / Players / Matches
+// ---------------------------------------------------------------------------
+model Team {
+  id            String         @id @default(cuid())
+  externalId    String?
+  fifaCode      String?        @unique
+  nameEn        String
+  nameZh        String?
+  continent     String?
+  groupName     String?
+  coachName     String?
+  flagUrl       String?
+  worldRanking  Int?
+  ratingTier    TeamRatingTier @default(UNKNOWN)
+  championScore Float?
+  formScore     Float?
+  attackScore   Float?
+  midfieldScore Float?
+  defenseScore  Float?
+  statusScore   Float?
+
+  players         Player[]
+  homeMatches     Match[]                   @relation("HomeTeam")
+  awayMatches     Match[]                   @relation("AwayTeam")
+  favoriteTeams   FavoriteTeam[]
+  championEntries ChampionPredictionEntry[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([nameEn])
+  @@index([nameZh])
+  @@index([continent])
+  @@index([groupName])
+  @@index([ratingTier])
+  @@index([championScore])
+}
+
+model Player {
+  id              String         @id @default(cuid())
+  externalId      String?
+  teamId          String
+  team            Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  nameEn          String
+  nameZh          String?
+  position        PlayerPosition @default(UNKNOWN)
+  clubName        String?
+  shirtNumber     Int?
+  ratingTier      RatingTier     @default(UNKNOWN)
+  overallScore    Float?
+  attackScore     Float?
+  creativityScore Float?
+  techniqueScore  Float?
+  defenseScore    Float?
+  physicalScore   Float?
+  formScore       Float?
+  role            PlayerRole     @default(UNKNOWN)
+  injuryRiskLevel RiskLevel      @default(UNKNOWN)
+
+  favoritePlayers FavoritePlayer[]
+  matchEvents     MatchEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([teamId])
+  @@index([nameEn])
+  @@index([nameZh])
+  @@index([position])
+  @@index([ratingTier])
+  @@index([overallScore])
+}
+
+model Match {
+  id              String       @id @default(cuid())
+  externalId      String?      @unique
+  homeTeamId      String
+  homeTeam        Team         @relation("HomeTeam", fields: [homeTeamId], references: [id])
+  awayTeamId      String
+  awayTeam        Team         @relation("AwayTeam", fields: [awayTeamId], references: [id])
+  winnerTeamId    String?
+  stage           MatchStage   @default(UNKNOWN)
+  groupName       String?
+  stadium         String?
+  kickoffAt       DateTime
+  status          MatchStatus  @default(SCHEDULED)
+  homeScore       Int?
+  awayScore       Int?
+  sourceUpdatedAt DateTime?
+  rawPayload      Json?
+  events          MatchEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kickoffAt])
+  @@index([status])
+  @@index([stage])
+  @@index([groupName])
+  @@index([homeTeamId])
+  @@index([awayTeamId])
+}
+
+model MatchEvent {
+  id              String   @id @default(cuid())
+  matchId         String
+  match           Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  minute          Int?
+  extraMinute     Int?
+  eventType       String
+  teamId          String?
+  playerId        String?
+  player          Player?  @relation(fields: [playerId], references: [id])
+  relatedPlayerId String?
+  description     String?
+  rawPayload      Json?
+  createdAt       DateTime @default(now())
+
+  @@index([matchId])
+}
+
+// ---------------------------------------------------------------------------
+// News
+// ---------------------------------------------------------------------------
+model NewsArticle {
+  id                  String            @id @default(cuid())
+  externalId          String?
+  sourceName          String
+  sourceUrl           String            @unique
+  titleEn             String
+  titleZh             String?
+  summaryEn           String?
+  summaryZh           String?
+  contentSnippet      String?
+  publishedAt         DateTime?
+  fetchedAt           DateTime?
+  category            NewsCategory?
+  language            String?
+  translatedContentZh String?
+  translationStatus   TranslationStatus @default(NONE)
+  aiSummaryStatus     AiReportStatus    @default(PENDING)
+  rawPayload          Json?
+  tags                NewsArticleTag[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([category])
+  @@index([sourceName])
+  @@index([publishedAt])
+}
+
+model NewsTag {
+  id        String           @id @default(cuid())
+  name      String
+  type      NewsTagType
+  articles  NewsArticleTag[]
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@unique([name, type])
+}
+
+model NewsArticleTag {
+  id            String      @id @default(cuid())
+  newsArticleId String
+  newsArticle   NewsArticle @relation(fields: [newsArticleId], references: [id], onDelete: Cascade)
+  newsTagId     String
+  newsTag       NewsTag     @relation(fields: [newsTagId], references: [id], onDelete: Cascade)
+  createdAt     DateTime    @default(now())
+
+  @@unique([newsArticleId, newsTagId])
+  @@index([newsTagId])
+}
+
+// ---------------------------------------------------------------------------
+// Favorites
+// ---------------------------------------------------------------------------
+model FavoriteTeam {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, teamId])
+  @@index([teamId])
+}
+
+model FavoritePlayer {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  playerId  String
+  player    Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, playerId])
+  @@index([playerId])
+}
+
+// ---------------------------------------------------------------------------
+// AI Reports / Usage
+// ---------------------------------------------------------------------------
+model AiReport {
+  id                  String         @id @default(cuid())
+  entityType          AiEntityType
+  entityId            String?
+  reportType          String
+  provider            AiProvider
+  model               String?
+  language            String         @default("zh-TW")
+  title               String?
+  content             String?
+  structuredJson      Json?
+  confidenceScore     Float?
+  sourceSnapshotHash  String?
+  inputTokenEstimate  Int?
+  outputTokenEstimate Int?
+  status              AiReportStatus @default(PENDING)
+  errorMessage        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([entityType, entityId])
+  @@index([reportType])
+}
+
+model AiUsageLog {
+  id                  String         @id @default(cuid())
+  userId              String?
+  user                User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  provider            AiProvider
+  model               String?
+  taskType            String
+  entityType          AiEntityType?
+  entityId            String?
+  requestStatus       AiReportStatus @default(PENDING)
+  inputTokenEstimate  Int?
+  outputTokenEstimate Int?
+  latencyMs           Int?
+  errorMessage        String?
+  createdAt           DateTime       @default(now())
+
+  @@index([userId])
+  @@index([taskType])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Champion Prediction
+// ---------------------------------------------------------------------------
+model ChampionPredictionRun {
+  id                String                        @id @default(cuid())
+  triggeredByUserId String?
+  triggeredBy       User?                         @relation(fields: [triggeredByUserId], references: [id], onDelete: SetNull)
+  triggerType       ChampionPredictionTriggerType @default(SYSTEM)
+  status            JobStatus                     @default(PENDING)
+  nvidiaReportId    String?
+  qwenReportId      String?
+  finalReportId     String?
+  dataSnapshotHash  String?
+  entries           ChampionPredictionEntry[]
+  createdAt         DateTime                      @default(now())
+  completedAt       DateTime?
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ChampionPredictionEntry {
+  id              String                @id @default(cuid())
+  runId           String
+  run             ChampionPredictionRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  teamId          String
+  team            Team                  @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  rank            Int
+  championScore   Float
+  ratingTier      TeamRatingTier        @default(UNKNOWN)
+  probabilityText String?
+  strengths       String[]
+  risks           String[]
+  aiComment       String?
+  createdAt       DateTime              @default(now())
+
+  @@unique([runId, teamId])
+  @@index([runId])
+}
+
+// ---------------------------------------------------------------------------
+// Jobs
+// ---------------------------------------------------------------------------
+model JobRun {
+  id          String    @id @default(cuid())
+  jobType     JobType
+  status      JobStatus @default(PENDING)
+  startedAt   DateTime?
+  completedAt DateTime?
+  errorMessage String?
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([jobType])
+  @@index([status])
+}

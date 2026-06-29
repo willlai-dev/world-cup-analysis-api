@@ -1,0 +1,19 @@
+# Local Postgres aligned to the existing DATABASE_URL in apps/api/.env.
+# NOTE: If you already run a local Postgres serving `footy_predict_dev` on 5432,
+# DO NOT run this compose file — it will conflict on port 5432.
+# Use your existing local Postgres OR this container, not both.
+services:
+  postgres:
+    image: postgres:16
+    container_name: worldcup_ai_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: npustSpcsAdmin
+      POSTGRES_PASSWORD: Local!!spcs-db
+      POSTGRES_DB: footy_predict_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - worldcup_ai_pg:/var/lib/postgresql/data
+volumes:
+  worldcup_ai_pg:

@@ -1,0 +1,24 @@
+{
+  "name": "worldcup-ai-analyst",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI World Cup Analyst — monorepo root (backend: apps/api)",
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["@prisma/client", "@prisma/engines", "prisma", "esbuild"]
+  },
+  "scripts": {
+    "api": "pnpm --filter api",
+    "dev": "pnpm --filter api start:dev",
+    "build": "pnpm --filter api build",
+    "test": "pnpm --filter api test",
+    "test:e2e": "pnpm --filter api test:e2e",
+    "prisma:generate": "pnpm --filter api prisma:generate",
+    "prisma:migrate": "pnpm --filter api prisma:migrate",
+    "prisma:seed": "pnpm --filter api prisma:seed",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down"
+  }
+}

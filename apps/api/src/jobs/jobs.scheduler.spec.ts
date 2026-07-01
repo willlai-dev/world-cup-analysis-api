@@ -6,7 +6,7 @@ describe('JobsScheduler', () => {
     const run = jest.fn().mockResolvedValue({ status: 'DONE' });
     const scheduler = new JobsScheduler({ run } as unknown as JobsService);
 
-    await scheduler.runDailyPipeline();
+    await scheduler.runFullPipeline();
 
     const order = run.mock.calls.map((c) => c[0]);
     expect(order).toEqual([
@@ -22,6 +22,25 @@ describe('JobsScheduler', () => {
     ]);
   });
 
+  it('midday refresh syncs fixtures/results/news + regenerates match & champion (no player sync/ratings)', async () => {
+    const run = jest.fn().mockResolvedValue({ status: 'DONE' });
+    const scheduler = new JobsScheduler({ run } as unknown as JobsService);
+
+    await scheduler.runMiddayRefresh();
+
+    const order = run.mock.calls.map((c) => c[0]);
+    expect(order).toEqual([
+      'SYNC_FIXTURES',
+      'SYNC_RESULTS',
+      'FETCH_NEWS',
+      'GENERATE_NEWS_SUMMARY',
+      'GENERATE_MATCH_ANALYSIS',
+      'GENERATE_CHAMPION_PREDICTIONS',
+    ]);
+    expect(order).not.toContain('SYNC_PLAYERS');
+    expect(order).not.toContain('GENERATE_PLAYER_RATINGS');
+  });
+
   it('continues the pipeline even if one job throws', async () => {
     const run = jest
       .fn()
@@ -30,7 +49,7 @@ describe('JobsScheduler', () => {
       .mockResolvedValue({ status: 'DONE' });
     const scheduler = new JobsScheduler({ run } as unknown as JobsService);
 
-    await scheduler.runDailyPipeline();
+    await scheduler.runFullPipeline();
 
     expect(run).toHaveBeenCalledTimes(9);
   });
@@ -47,8 +66,8 @@ describe('JobsScheduler', () => {
       .mockResolvedValue({ status: 'DONE' });
     const scheduler = new JobsScheduler({ run } as unknown as JobsService);
 
-    const first = scheduler.runDailyPipeline(); // hangs on first job
-    await scheduler.runDailyPipeline(); // should skip (guard)
+    const first = scheduler.runFullPipeline(); // hangs on first job
+    await scheduler.runFullPipeline(); // should skip (guard)
     expect(run).toHaveBeenCalledTimes(1);
 
     resolveFirst();

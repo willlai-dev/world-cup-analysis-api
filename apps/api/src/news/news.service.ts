@@ -146,7 +146,8 @@ export class NewsService {
   /** Job: AI summary + classification (+ tags) for not-yet-processed articles. */
   async generateSummaries(): Promise<GenerationResult> {
     const articles = await this.prisma.newsArticle.findMany({
-      where: { aiSummaryStatus: AiReportStatus.PENDING },
+      // Include FAILED so a re-run retries articles whose summary failed before.
+      where: { aiSummaryStatus: { in: [AiReportStatus.PENDING, AiReportStatus.FAILED] } },
       take: MAX_GENERATIONS_PER_RUN,
       orderBy: { publishedAt: 'desc' },
     });

@@ -775,8 +775,13 @@ Failure note:
 - AI-generation jobs are implemented: `generate-news-summary` / `generate-player-ratings` /
   `generate-match-analysis` / `generate-champion-predictions` (via AiRouter; skip-if-unchanged via
   `sourceSnapshotHash`; bounded at 200/run; `PROGRAM_RULE` reports under `AI_MOCK_MODE`).
-- Not yet implemented: quota-429 enforcement, group-stage (non-knockout) elimination derivation, and
-  an automatic scheduler (jobs are still triggered manually via `/api/jobs/*`).
+- Scheduler is implemented (`@nestjs/schedule`, `jobs/jobs.scheduler.ts`): **04:00 full pipeline**
+  (all sync + all generate) and **12:00 midday refresh** (fixtures/results/news + match & champion
+  generation, no team/player sync or player ratings) — two slots because source data can lag. Manual
+  `/api/jobs/*` still works.
+- Team `nameZh` is now populated for synced teams via `sources/football-data/country-names.ts`
+  (fifaCode → 繁中); frontend can display Chinese names.
+- Not yet implemented: quota-429 enforcement, group-stage (non-knockout) elimination derivation.
 
 ### SPEC_MISMATCH
 

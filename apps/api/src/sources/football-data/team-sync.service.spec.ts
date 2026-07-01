@@ -40,6 +40,7 @@ describe('TeamSyncService', () => {
         externalId: '764',
         fifaCode: 'BRA',
         nameEn: 'Brazil',
+        nameZh: '巴西',
         coachName: 'Coach',
         flagUrl: 'crest-url',
       }),

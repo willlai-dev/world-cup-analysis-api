@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
-import { AppConfigService } from '../../config/app-config.service';
-import { fetchJson, SourceError, sleep } from '../http.util';
+import { Injectable } from "@nestjs/common";
+import { AppConfigService } from "../../config/app-config.service";
+import { fetchJson, SourceError, sleep } from "../http.util";
 import type {
   FdMatch,
   FdMatchesResponse,
@@ -8,7 +8,7 @@ import type {
   FdTeam,
   FdTeamDetail,
   FdTeamsResponse,
-} from './football-data.types';
+} from "./football-data.types";
 
 /** Wait this long before retrying after a 429 (free tier rate limit). */
 const RATE_LIMIT_RETRY_MS = 30_000;
@@ -28,7 +28,9 @@ export class FootballDataClient {
 
   async getCompetitionTeams(): Promise<FdTeam[]> {
     const { competition } = this.config.footballData;
-    const data = await this.getJson<FdTeamsResponse>(`/competitions/${competition}/teams`);
+    const data = await this.getJson<FdTeamsResponse>(
+      `/competitions/${competition}/teams`,
+    );
     return data.teams ?? [];
   }
 
@@ -39,11 +41,16 @@ export class FootballDataClient {
 
   async getCompetitionMatches(status?: string): Promise<FdMatch[]> {
     const { competition } = this.config.footballData;
-    const query = status ? `?status=${encodeURIComponent(status)}` : '';
+    const query = status ? `?status=${encodeURIComponent(status)}` : "";
     const data = await this.getJson<FdMatchesResponse>(
       `/competitions/${competition}/matches${query}`,
     );
     return data.matches ?? [];
+  }
+
+  /** Fetch a single match by its football-data.org numeric ID. */
+  async getMatch(matchId: number): Promise<FdMatch> {
+    return this.getJson<FdMatch>(`/matches/${matchId}`);
   }
 
   /** GET with retry: on 429, wait Retry-After (>= 30s) and retry up to MAX_RETRIES. */
@@ -52,7 +59,11 @@ export class FootballDataClient {
       try {
         return await fetchJson<T>(this.url(path), { headers: this.headers() });
       } catch (err) {
-        if (err instanceof SourceError && err.statusCode === 429 && attempt < MAX_RETRIES) {
+        if (
+          err instanceof SourceError &&
+          err.statusCode === 429 &&
+          attempt < MAX_RETRIES
+        ) {
           await sleep(Math.max(err.retryAfterMs ?? 0, this.retryDelayMs));
           continue;
         }
@@ -62,10 +73,10 @@ export class FootballDataClient {
   }
 
   private headers(): Record<string, string> {
-    return { 'X-Auth-Token': this.config.footballData.apiKey };
+    return { "X-Auth-Token": this.config.footballData.apiKey };
   }
 
   private url(path: string): string {
-    return `${this.config.footballData.baseUrl.replace(/\/$/, '')}${path}`;
+    return `${this.config.footballData.baseUrl.replace(/\/$/, "")}${path}`;
   }
 }

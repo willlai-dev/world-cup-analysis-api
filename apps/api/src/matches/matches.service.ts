@@ -1,34 +1,47 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { AiEntityType, AiReportStatus, MatchStatus, type Prisma } from '@prisma/client';
-import { type GenerationResult, MAX_GENERATIONS_PER_RUN } from '../ai/generation-result';
-import { AiRouterService } from '../ai/ai-router.service';
+import { Injectable, NotFoundException } from "@nestjs/common";
+import {
+  AiEntityType,
+  AiReportStatus,
+  MatchStatus,
+  type Prisma,
+} from "@prisma/client";
+import {
+  type GenerationResult,
+  MAX_GENERATIONS_PER_RUN,
+} from "../ai/generation-result";
+import { AiRouterService } from "../ai/ai-router.service";
 import {
   type MatchAnalysisOutput,
   MatchAnalysisOutputSchema,
-} from '../ai/schemas/match-analysis.schema';
+} from "../ai/schemas/match-analysis.schema";
 import type {
   AiReportDto,
   ChatAnswerDto,
   MatchPredictionDto,
   MatchSummary,
-} from '../common/dto/contracts';
-import { toAiReportDto, toMatchSummary } from '../mappers';
-import { PrismaService } from '../prisma/prisma.service';
-import type { ListMatchesQueryDto } from './dto/list-matches-query.dto';
+} from "../common/dto/contracts";
+import { toAiReportDto, toMatchSummary } from "../mappers";
+import { PrismaService } from "../prisma/prisma.service";
+import type { ListMatchesQueryDto } from "./dto/list-matches-query.dto";
 
 // Bump when the match-analysis prompt/schema changes so runReportIfChanged
 // regenerates existing analyses (the context hash changes with it).
 const MATCH_ANALYSIS_VERSION = 2;
 
 const MATCH_MOCK: MatchAnalysisOutput = {
-  title: '【AI_MOCK_MODE】賽事分析示範',
-  summary: '示範模式，尚未串接真實模型。',
+  title: "【AI_MOCK_MODE】賽事分析示範",
+  summary: "示範模式，尚未串接真實模型。",
   keyFactors: [],
   keyPlayers: [],
-  prediction: { homeWinLean: 0, drawLean: 0, awayWinLean: 0, explanation: '示範' },
+  prediction: {
+    homeWinLean: 0,
+    drawLean: 0,
+    awayWinLean: 0,
+    explanation: "示範",
+  },
   likelyScorelines: [],
   risks: [],
-  dataLimitations: ['示範模式'],
+  dataLimitations: ["示範模式"],
 };
 
 export type MatchEventDto = {
@@ -43,7 +56,10 @@ export type MatchEventDto = {
 
 export type MatchDetailDto = MatchSummary & { events: MatchEventDto[] };
 
-const matchInclude = { homeTeam: true, awayTeam: true } satisfies Prisma.MatchInclude;
+const matchInclude = {
+  homeTeam: true,
+  awayTeam: true,
+} satisfies Prisma.MatchInclude;
 
 @Injectable()
 export class MatchesService {
@@ -52,7 +68,9 @@ export class MatchesService {
     private readonly router: AiRouterService,
   ) {}
 
-  async list(query: ListMatchesQueryDto): Promise<{ items: MatchSummary[]; total: number }> {
+  async list(
+    query: ListMatchesQueryDto,
+  ): Promise<{ items: MatchSummary[]; total: number }> {
     const where: Prisma.MatchWhereInput = {};
     if (query.status) {
       where.status = query.status;
@@ -81,7 +99,7 @@ export class MatchesService {
         where,
         skip: query.skip,
         take: query.take,
-        orderBy: { kickoffAt: 'asc' },
+        orderBy: [{ kickoffAt: "asc" }, { id: "asc" }],
         include: matchInclude,
       }),
       this.prisma.match.count({ where }),
@@ -96,7 +114,7 @@ export class MatchesService {
     end.setDate(end.getDate() + 1);
     const matches = await this.prisma.match.findMany({
       where: { kickoffAt: { gte: start, lt: end } },
-      orderBy: { kickoffAt: 'asc' },
+      orderBy: { kickoffAt: "asc" },
       include: matchInclude,
     });
     return matches.map((m) => toMatchSummary(m));
@@ -105,10 +123,16 @@ export class MatchesService {
   async getById(matchId: string): Promise<MatchDetailDto> {
     const match = await this.prisma.match.findUnique({
       where: { id: matchId },
-      include: { ...matchInclude, events: { orderBy: [{ minute: 'asc' }, { id: 'asc' }] } },
+      include: {
+        ...matchInclude,
+        events: { orderBy: [{ minute: "asc" }, { id: "asc" }] },
+      },
     });
     if (!match) {
-      throw new NotFoundException({ code: 'NOT_FOUND', message: 'Match not found' });
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "Match not found",
+      });
     }
     return {
       ...toMatchSummary(match),
@@ -124,10 +148,14 @@ export class MatchesService {
     };
   }
 
-  async deepChat(matchId: string, userId: string, question: string): Promise<ChatAnswerDto> {
+  async deepChat(
+    matchId: string,
+    userId: string,
+    question: string,
+  ): Promise<ChatAnswerDto> {
     const match = await this.getById(matchId);
     return this.router.runChat({
-      taskType: 'DEEP_MATCH_CHAT',
+      taskType: "DEEP_MATCH_CHAT",
       userId,
       entityId: matchId,
       question,
@@ -145,7 +173,7 @@ export class MatchesService {
   async generateAnalyses(): Promise<GenerationResult> {
     const matches = await this.prisma.match.findMany({
       where: { status: MatchStatus.SCHEDULED },
-      orderBy: { kickoffAt: 'asc' },
+      orderBy: { kickoffAt: "asc" },
       include: matchInclude,
     });
     let scanned = 0;
@@ -168,14 +196,14 @@ export class MatchesService {
         awayScore: m.awayScore,
       };
       const report = await this.router.runReportIfChanged<MatchAnalysisOutput>({
-        taskType: 'MATCH_ANALYSIS',
+        taskType: "MATCH_ANALYSIS",
         entityId: m.id,
-        reportType: 'MATCH_ANALYSIS',
+        reportType: "MATCH_ANALYSIS",
         instruction:
-          '請依雙方國家隊資料分析此場賽事。只輸出 JSON,欄位:title、summary、keyFactors[]、' +
-          'keyPlayers[{playerName,teamName,reason}]、prediction{homeWinLean,drawLean,awayWinLean(0-100),explanation}、' +
+          "請依雙方國家隊資料分析此場賽事。只輸出 JSON,欄位:title、summary、keyFactors[]、" +
+          "keyPlayers[{playerName,teamName,reason}]、prediction{homeWinLean,drawLean,awayWinLean(0-100),explanation}、" +
           'likelyScorelines(最可能的三種比分,格式 [{score:"主-客" 例如 "2-1", probability:0-100}],三筆機率遞減)、' +
-          'risks[]、dataLimitations[]。勝負只能表述為傾向,不可保證。',
+          "risks[]、dataLimitations[]。勝負只能表述為傾向,不可保證。",
         context,
         scope: `賽事：${m.homeTeam.nameEn} vs ${m.awayTeam.nameEn}`,
         schema: MatchAnalysisOutputSchema,
@@ -188,41 +216,52 @@ export class MatchesService {
       else failed += 1;
     }
 
-    return { scope: 'matches', scanned, generated, skipped, failed };
+    return { scope: "matches", scanned, generated, skipped, failed };
   }
 
   async getAnalysis(matchId: string): Promise<AiReportDto | null> {
     await this.ensureExists(matchId);
-    return this.latestReport(matchId, ['MATCH_ANALYSIS']);
+    return this.latestReport(matchId, ["MATCH_ANALYSIS"]);
   }
 
   async getPostMatchReport(matchId: string): Promise<AiReportDto | null> {
     await this.ensureExists(matchId);
-    return this.latestReport(matchId, ['POST_MATCH_REPORT', 'MATCH_ANALYSIS']);
+    return this.latestReport(matchId, ["POST_MATCH_REPORT", "MATCH_ANALYSIS"]);
   }
 
   async getPrediction(matchId: string): Promise<MatchPredictionDto> {
-    const match = await this.prisma.match.findUnique({ where: { id: matchId } });
+    const match = await this.prisma.match.findUnique({
+      where: { id: matchId },
+    });
     if (!match) {
-      throw new NotFoundException({ code: 'NOT_FOUND', message: 'Match not found' });
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "Match not found",
+      });
     }
     const report = await this.prisma.aiReport.findFirst({
       where: {
         entityType: AiEntityType.MATCH,
         entityId: matchId,
         status: AiReportStatus.DONE,
-        reportType: { in: ['MATCH_PREDICTION', 'MATCH_ANALYSIS'] },
+        reportType: { in: ["MATCH_PREDICTION", "MATCH_ANALYSIS"] },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
     const structured = (report?.structuredJson ?? null) as {
-      prediction?: { homeWinLean?: number; drawLean?: number; awayWinLean?: number };
+      prediction?: {
+        homeWinLean?: number;
+        drawLean?: number;
+        awayWinLean?: number;
+      };
       likelyScorelines?: { score?: string; probability?: number }[];
       keyFactors?: string[];
       risks?: string[];
     } | null;
     const likelyScorelines = (structured?.likelyScorelines ?? [])
-      .filter((s): s is { score: string; probability?: number } => Boolean(s?.score))
+      .filter((s): s is { score: string; probability?: number } =>
+        Boolean(s?.score),
+      )
       .slice(0, 3)
       .map((s) => ({ score: s.score, probability: s.probability ?? null }));
     return {
@@ -234,7 +273,9 @@ export class MatchesService {
       keyFactors: structured?.keyFactors ?? [],
       riskNotes: structured?.risks ?? [],
       report: report ? toAiReportDto(report) : null,
-      sourceUpdatedAt: match.sourceUpdatedAt ? match.sourceUpdatedAt.toISOString() : null,
+      sourceUpdatedAt: match.sourceUpdatedAt
+        ? match.sourceUpdatedAt.toISOString()
+        : null,
     };
   }
 
@@ -244,11 +285,17 @@ export class MatchesService {
       select: { id: true },
     });
     if (!match) {
-      throw new NotFoundException({ code: 'NOT_FOUND', message: 'Match not found' });
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "Match not found",
+      });
     }
   }
 
-  private async latestReport(matchId: string, reportTypes: string[]): Promise<AiReportDto | null> {
+  private async latestReport(
+    matchId: string,
+    reportTypes: string[],
+  ): Promise<AiReportDto | null> {
     const report = await this.prisma.aiReport.findFirst({
       where: {
         entityType: AiEntityType.MATCH,
@@ -256,7 +303,7 @@ export class MatchesService {
         status: AiReportStatus.DONE,
         reportType: { in: reportTypes },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
     return report ? toAiReportDto(report) : null;
   }

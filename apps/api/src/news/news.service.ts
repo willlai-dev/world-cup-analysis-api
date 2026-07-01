@@ -1,30 +1,33 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException } from "@nestjs/common";
 import {
   AiReportStatus,
   NewsCategory,
   NewsTagType,
   type Prisma,
   TranslationStatus,
-} from '@prisma/client';
-import { type GenerationResult, MAX_GENERATIONS_PER_RUN } from '../ai/generation-result';
-import { AiRouterService } from '../ai/ai-router.service';
+} from "@prisma/client";
+import {
+  type GenerationResult,
+  MAX_GENERATIONS_PER_RUN,
+} from "../ai/generation-result";
+import { AiRouterService } from "../ai/ai-router.service";
 import {
   type NewsClassificationOutput,
   NewsClassificationOutputSchema,
-} from '../ai/schemas/news-classification.schema';
-import type { ChatAnswerDto, NewsSummary } from '../common/dto/contracts';
-import { toNewsSummary } from '../mappers';
-import { PrismaService } from '../prisma/prisma.service';
-import type { ListNewsQueryDto } from './dto/list-news-query.dto';
+} from "../ai/schemas/news-classification.schema";
+import type { ChatAnswerDto, NewsSummary } from "../common/dto/contracts";
+import { toNewsSummary } from "../mappers";
+import { PrismaService } from "../prisma/prisma.service";
+import type { ListNewsQueryDto } from "./dto/list-news-query.dto";
 
 const NEWS_MOCK: NewsClassificationOutput = {
-  summaryZh: '【AI_MOCK_MODE】新聞摘要示範（尚未串接真實模型）。',
-  category: 'OTHER',
+  summaryZh: "【AI_MOCK_MODE】新聞摘要示範（尚未串接真實模型）。",
+  category: "OTHER",
   tags: [],
   relatedTeamNames: [],
   relatedPlayerNames: [],
   confidenceScore: 50,
-  dataLimitations: ['示範模式'],
+  dataLimitations: ["示範模式"],
 };
 
 export type NewsDetailDto = NewsSummary & {
@@ -45,13 +48,15 @@ export class NewsService {
     private readonly router: AiRouterService,
   ) {}
 
-  async list(query: ListNewsQueryDto): Promise<{ items: NewsSummary[]; total: number }> {
+  async list(
+    query: ListNewsQueryDto,
+  ): Promise<{ items: NewsSummary[]; total: number }> {
     const where: Prisma.NewsArticleWhereInput = {};
     if (query.category) {
       where.category = query.category;
     }
     if (query.sourceName) {
-      where.sourceName = { contains: query.sourceName, mode: 'insensitive' };
+      where.sourceName = { contains: query.sourceName, mode: "insensitive" };
     }
     if (query.dateFrom || query.dateTo) {
       where.publishedAt = {};
@@ -73,7 +78,7 @@ export class NewsService {
         where,
         skip: query.skip,
         take: query.take,
-        orderBy: { publishedAt: 'desc' },
+        orderBy: [{ publishedAt: "desc" }, { id: "asc" }],
         include: withTags,
       }),
       this.prisma.newsArticle.count({ where }),
@@ -87,7 +92,10 @@ export class NewsService {
       include: withTags,
     });
     if (!news) {
-      throw new NotFoundException({ code: 'NOT_FOUND', message: 'News article not found' });
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "News article not found",
+      });
     }
     return {
       ...toNewsSummary(news),
@@ -100,9 +108,14 @@ export class NewsService {
 
   /** Translates a news article to zh-TW via the AI router (Qwen). */
   async translate(newsId: string, userId: string): Promise<NewsDetailDto> {
-    const news = await this.prisma.newsArticle.findUnique({ where: { id: newsId } });
+    const news = await this.prisma.newsArticle.findUnique({
+      where: { id: newsId },
+    });
     if (!news) {
-      throw new NotFoundException({ code: 'NOT_FOUND', message: 'News article not found' });
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "News article not found",
+      });
     }
     const source = news.contentSnippet ?? news.summaryEn ?? news.titleEn;
     const result = await this.router.runTranslation({
@@ -114,10 +127,14 @@ export class NewsService {
     const updated = await this.prisma.newsArticle.update({
       where: { id: newsId },
       data: {
-        translationStatus: result.ok ? TranslationStatus.DONE : TranslationStatus.FAILED,
+        translationStatus: result.ok
+          ? TranslationStatus.DONE
+          : TranslationStatus.FAILED,
         titleZh: news.titleZh ?? `【譯】${news.titleEn}`,
         // Keep any previous translation if this attempt failed.
-        translatedContentZh: result.ok ? result.content : news.translatedContentZh,
+        translatedContentZh: result.ok
+          ? result.content
+          : news.translatedContentZh,
       },
       include: withTags,
     });
@@ -130,10 +147,14 @@ export class NewsService {
     };
   }
 
-  async deepChat(newsId: string, userId: string, question: string): Promise<ChatAnswerDto> {
+  async deepChat(
+    newsId: string,
+    userId: string,
+    question: string,
+  ): Promise<ChatAnswerDto> {
     const news = await this.getById(newsId);
     return this.router.runChat({
-      taskType: 'DEEP_NEWS_CHAT',
+      taskType: "DEEP_NEWS_CHAT",
       userId,
       entityId: newsId,
       question,
@@ -147,9 +168,13 @@ export class NewsService {
   async generateSummaries(): Promise<GenerationResult> {
     const articles = await this.prisma.newsArticle.findMany({
       // Include FAILED so a re-run retries articles whose summary failed before.
-      where: { aiSummaryStatus: { in: [AiReportStatus.PENDING, AiReportStatus.FAILED] } },
+      where: {
+        aiSummaryStatus: {
+          in: [AiReportStatus.PENDING, AiReportStatus.FAILED],
+        },
+      },
       take: MAX_GENERATIONS_PER_RUN,
-      orderBy: { publishedAt: 'desc' },
+      orderBy: { publishedAt: "desc" },
     });
     let generated = 0;
     let failed = 0;
@@ -163,11 +188,11 @@ export class NewsService {
         publishedAt: article.publishedAt?.toISOString() ?? null,
       };
       const report = await this.router.runReport<NewsClassificationOutput>({
-        taskType: 'NEWS_CLASSIFICATION',
+        taskType: "NEWS_CLASSIFICATION",
         entityId: article.id,
-        reportType: 'NEWS_CLASSIFICATION',
+        reportType: "NEWS_CLASSIFICATION",
         instruction:
-          '請依新聞標題與摘要，輸出繁體中文摘要、分類與標籤。只輸出 JSON，欄位：' +
+          "請依新聞標題與摘要，輸出繁體中文摘要、分類與標籤。只輸出 JSON，欄位：" +
           '{ "summaryZh": string, "category": MATCH|PLAYER|INJURY|TRANSFER|TEAM|TACTIC|CONTROVERSY|TOURNAMENT|OTHER, ' +
           '"tags": [{ "name": string, "type": TEAM|PLAYER|MATCH|TOPIC|INJURY|TACTIC|CONTROVERSY|TRANSFER|OTHER }], ' +
           '"relatedTeamNames": string[], "relatedPlayerNames": string[], "confidenceScore": number, "dataLimitations": string[] }。',
@@ -189,7 +214,13 @@ export class NewsService {
       }
     }
 
-    return { scope: 'news', scanned: articles.length, generated, skipped: 0, failed };
+    return {
+      scope: "news",
+      scanned: articles.length,
+      generated,
+      skipped: 0,
+      failed,
+    };
   }
 
   private async applyClassification(

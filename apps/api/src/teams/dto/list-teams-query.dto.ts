@@ -1,6 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { TeamRatingTier } from '@prisma/client';
-import { IsEnum, IsIn, IsOptional, IsString } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsBoolean, IsEnum, IsIn, IsOptional, IsString } from 'class-validator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
 export class ListTeamsQueryDto extends PaginationQueryDto {
@@ -8,6 +9,12 @@ export class ListTeamsQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  @ApiPropertyOptional({ type: Boolean, description: 'Filter by knockout elimination status' })
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'boolean' ? value : value === 'true'))
+  @IsBoolean()
+  eliminated?: boolean;
 
   @ApiPropertyOptional()
   @IsOptional()

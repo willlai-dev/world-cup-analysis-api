@@ -26,6 +26,7 @@ export type TeamSummary = {
   midfieldScore?: number | null;
   defenseScore?: number | null;
   statusScore?: number | null;
+  isEliminated: boolean;
 };
 
 export type PlayerSummary = {
@@ -82,11 +83,19 @@ export type AiReportDto = {
   updatedAt: string;
 };
 
+export type ScoreLinePredictionDto = {
+  /** Scoreline as "home-away", e.g. "2-1". */
+  score: string;
+  probability?: number | null;
+};
+
 export type MatchPredictionDto = {
   matchId: string;
   homeWinProbability?: number | null;
   drawProbability?: number | null;
   awayWinProbability?: number | null;
+  /** Up to three most-likely scorelines with their probabilities. */
+  likelyScorelines: ScoreLinePredictionDto[];
   keyFactors: string[];
   riskNotes: string[];
   report?: AiReportDto | null;

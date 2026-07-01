@@ -1,11 +1,12 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { buildPaginationMeta, Paginated } from '../common/dto/api-response.types';
 import { ChatQuestionDto } from '../common/dto/chat.dto';
 import type { AiReportDto, ChatAnswerDto, PlayerSummary } from '../common/dto/contracts';
 import { NonAdminUserGuard } from '../common/guards/non-admin-user.guard';
 import { PremiumOnlyGuard } from '../common/guards/premium-only.guard';
-import { buildMockChatAnswer } from '../common/utils/ai-mock.util';
+import type { AuthenticatedUser } from '../common/types/authenticated-user';
 import { ListPlayersQueryDto } from './dto/list-players-query.dto';
 import { PlayersService } from './players.service';
 
@@ -38,11 +39,11 @@ export class PlayersController {
 
   @Post(':playerId/deep-chat')
   @UseGuards(PremiumOnlyGuard)
-  async deepChat(
+  deepChat(
+    @CurrentUser() user: AuthenticatedUser,
     @Param('playerId') playerId: string,
     @Body() dto: ChatQuestionDto,
   ): Promise<ChatAnswerDto> {
-    const player = await this.players.getById(playerId);
-    return buildMockChatAnswer(dto.question, { scope: `球員：${player.nameEn}` });
+    return this.players.deepChat(playerId, user.id, dto.question);
   }
 }

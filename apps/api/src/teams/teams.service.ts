@@ -1,7 +1,9 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { AiEntityType, AiReportStatus, type Prisma } from '@prisma/client';
+import { AiRouterService } from '../ai/ai-router.service';
 import type {
   AiReportDto,
+  ChatAnswerDto,
   MatchSummary,
   PlayerSummary,
   TeamSummary,
@@ -21,7 +23,10 @@ const TEAM_SORT_FIELDS = [
 
 @Injectable()
 export class TeamsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly router: AiRouterService,
+  ) {}
 
   async list(query: ListTeamsQueryDto): Promise<{ items: TeamSummary[]; total: number }> {
     const where: Prisma.TeamWhereInput = {};
@@ -30,6 +35,9 @@ export class TeamsService {
     }
     if (query.ratingTier) {
       where.ratingTier = query.ratingTier;
+    }
+    if (query.eliminated !== undefined) {
+      where.isEliminated = query.eliminated;
     }
     if (query.search) {
       where.OR = [
@@ -61,6 +69,19 @@ export class TeamsService {
       throw new NotFoundException({ code: 'NOT_FOUND', message: 'Team not found' });
     }
     return toTeamSummary(team);
+  }
+
+  async deepChat(teamId: string, userId: string, question: string): Promise<ChatAnswerDto> {
+    const team = await this.getById(teamId);
+    const players = await this.getPlayers(teamId);
+    return this.router.runChat({
+      taskType: 'DEEP_TEAM_CHAT',
+      userId,
+      entityId: teamId,
+      question,
+      scope: `國家隊：${team.nameEn}`,
+      context: { team, players },
+    });
   }
 
   async getPlayers(teamId: string): Promise<PlayerSummary[]> {

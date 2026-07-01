@@ -49,6 +49,7 @@ export function toTeamSummary(team: Team): TeamSummary {
     midfieldScore: team.midfieldScore,
     defenseScore: team.defenseScore,
     statusScore: team.statusScore,
+    isEliminated: team.isEliminated,
   };
 }
 

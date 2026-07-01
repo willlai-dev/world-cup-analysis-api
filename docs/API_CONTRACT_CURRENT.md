@@ -239,6 +239,7 @@ type TeamSummary = {
   midfieldScore?: number | null;
   defenseScore?: number | null;
   statusScore?: number | null;
+  isEliminated: boolean; // true once knocked out of the tournament (lost a finished knockout match)
 };
 
 type PlayerSummary = {
@@ -309,11 +310,17 @@ type AiReportDto = {
   updatedAt: string;
 };
 
+type ScoreLinePredictionDto = {
+  score: string; // "home-away", e.g. "2-1"
+  probability?: number | null; // 0-100
+};
+
 type MatchPredictionDto = {
   matchId: string;
   homeWinProbability?: number | null;
   drawProbability?: number | null;
   awayWinProbability?: number | null;
+  likelyScorelines: ScoreLinePredictionDto[]; // up to 3 most-likely scorelines (desc probability)
   keyFactors: string[];
   riskNotes: string[];
   report?: AiReportDto | null;
@@ -536,7 +543,7 @@ Behavior notes:
 - `GET /api/matches/:matchId/prediction`
   - Reads `structuredJson.prediction.homeWinLean`, `drawLean`, `awayWinLean` if present.
   - If no structured prediction exists, the probabilities are `null` and `keyFactors` / `riskNotes` are empty arrays.
-- `POST /api/matches/:matchId/deep-chat` currently returns a mock answer with `provider = "PROGRAM_RULE"` and `model = "mock"`.
+- `POST /api/matches/:matchId/deep-chat` routes through the AI router. When `AI_MOCK_MODE=false` it returns a real grounded answer (`provider` `NVIDIA`/`QWEN`); under `AI_MOCK_MODE=true` it returns the deterministic `PROGRAM_RULE` / `model = "mock"` answer. On total provider failure it degrades gracefully to a `PROGRAM_RULE` notice (still `200`/`201`).
 
 ### 5.6 Teams
 
@@ -556,6 +563,7 @@ Query and body contract:
   - `search?`: string
   - `continent?`: string
   - `ratingTier?`: `S | A | B | C | UNKNOWN`
+  - `eliminated?`: boolean (`true`/`false`) — filter by knockout elimination status
   - `sortBy?`: actual service whitelist is `championScore | formScore | worldRanking | nameEn | ratingTier | createdAt`
   - `sortOrder?`: `asc | desc`
 - `POST /api/teams/:teamId/deep-chat` body
@@ -569,7 +577,7 @@ Behavior notes:
 - `GET /api/teams/:teamId/players` currently does not include nested `team` objects inside each `PlayerSummary` item.
 - `GET /api/teams/:teamId/matches` returns matches ordered by `kickoffAt ASC`.
 - `GET /api/teams/:teamId/analysis` returns the latest DONE team AI report; the code does not constrain `reportType` beyond `entityType = TEAM`.
-- `POST /api/teams/:teamId/deep-chat` currently returns a mock answer with `provider = "PROGRAM_RULE"` and `model = "mock"`.
+- `POST /api/teams/:teamId/deep-chat` routes through the AI router. When `AI_MOCK_MODE=false` it returns a real grounded answer (`provider` `NVIDIA`/`QWEN`); under `AI_MOCK_MODE=true` it returns the deterministic `PROGRAM_RULE` / `model = "mock"` answer. On total provider failure it degrades gracefully to a `PROGRAM_RULE` notice (still `200`/`201`).
 
 ### 5.7 Players
 
@@ -589,6 +597,7 @@ Query and body contract:
   - `teamId?`: string
   - `position?`: `GK | DF | MF | FW | UNKNOWN`
   - `ratingTier?`: `S | A_PLUS | A | B_PLUS | B | C | UNKNOWN`
+  - `eliminated?`: boolean (`true`/`false`) — filter by the player's national team knockout elimination status (`team.isEliminated`)
   - `sortBy?`: actual service whitelist is `overallScore | attackScore | creativityScore | techniqueScore | defenseScore | physicalScore | formScore | nameEn | createdAt`
   - `sortOrder?`: `asc | desc`
 - `POST /api/players/:playerId/deep-chat` body
@@ -599,7 +608,7 @@ Behavior notes:
 
 - `GET /api/players` defaults to sorting by `overallScore DESC` when `sortBy` is omitted or unsupported.
 - `GET /api/players` and `GET /api/players/:playerId` include nested `team` inside each `PlayerSummary`.
-- `POST /api/players/:playerId/deep-chat` currently returns a mock answer with `provider = "PROGRAM_RULE"` and `model = "mock"`.
+- `POST /api/players/:playerId/deep-chat` routes through the AI router. When `AI_MOCK_MODE=false` it returns a real grounded answer (`provider` `NVIDIA`/`QWEN`); under `AI_MOCK_MODE=true` it returns the deterministic `PROGRAM_RULE` / `model = "mock"` answer. On total provider failure it degrades gracefully to a `PROGRAM_RULE` notice (still `200`/`201`).
 
 ### 5.8 Favorites
 
@@ -646,10 +655,12 @@ Behavior notes:
 - `teamId` and `playerId` filters are not direct relations. The service resolves the referenced team/player English and Chinese names, then filters by matching tag names.
 - If `teamId` or `playerId` cannot be resolved, the service does not throw `404`; it simply does not add extra tag names for that filter.
 - `POST /api/news/:newsId/translate`
-  - Immediately sets `translationStatus = DONE`.
+  - Routes through the AI router `NEWS_TRANSLATION` (Qwen Flash → Flash fallback).
   - If `titleZh` is absent, it becomes `【譯】${titleEn}`.
-  - `translatedContentZh` becomes a mock string prefixed with `【AI_MOCK_MODE 翻譯】`.
-- `POST /api/news/:newsId/deep-chat` currently returns a mock answer with `provider = "PROGRAM_RULE"` and `model = "mock"`.
+  - On success sets `translationStatus = DONE` and stores the translated text in `translatedContentZh`.
+    Under `AI_MOCK_MODE=true` the text is the deterministic mock prefixed with `【AI_MOCK_MODE 翻譯】`.
+  - On provider failure sets `translationStatus = FAILED` and leaves any previous `translatedContentZh` untouched.
+- `POST /api/news/:newsId/deep-chat` routes through the AI router. When `AI_MOCK_MODE=false` it returns a real grounded answer (`provider` `NVIDIA`/`QWEN`); under `AI_MOCK_MODE=true` it returns the deterministic `PROGRAM_RULE` / `model = "mock"` answer. On total provider failure it degrades gracefully to a `PROGRAM_RULE` notice (still `200`/`201`).
 
 ### 5.10 Champion Predictions
 
@@ -665,12 +676,14 @@ Behavior notes:
 - `GET /api/champion-predictions` and `GET /api/champion-predictions/latest` currently call the same service method and return the same resource.
 - If no champion-prediction run exists yet, success response is `{ data: null, error: null }`.
 - `POST /api/champion-predictions/recalculate`
-  - Current implementation is a mock recalculation.
-  - Selects the top 8 teams by `championScore DESC`.
-  - Creates a run with `status = DONE` immediately.
-  - `entries[*].aiComment` is a mock text.
-  - `nvidiaReport`, `qwenReport`, and `finalReport` are currently `null` for newly created mock runs.
-- `POST /api/champion-predictions/deep-chat` currently returns a mock answer with `provider = "PROGRAM_RULE"` and `model = "mock"`.
+  - Selects the top 8 teams by `championScore DESC` as the run's team set.
+  - Under `AI_MOCK_MODE=true`: deterministic ranking with mock `entries[*].aiComment`; the three reports stay `null`.
+  - Under `AI_MOCK_MODE=false`: runs `CHAMPION_PREDICTION_A` (NVIDIA), `_B` (Qwen), and `_FINAL`
+    (Qwen → NVIDIA fallback), persists an `AiReport` per leg, and links `nvidiaReport` / `qwenReport` /
+    `finalReport`. Entries are built from the validated final output.
+  - If the final model fails or returns schema-invalid output, the run degrades to the `championScore`
+    ranking (so `entries` is always populated) and the failed legs are linked as `FAILED` reports.
+- `POST /api/champion-predictions/deep-chat` routes through the AI router. When `AI_MOCK_MODE=false` it returns a real grounded answer (`provider` `NVIDIA`/`QWEN`); under `AI_MOCK_MODE=true` it returns the deterministic `PROGRAM_RULE` / `model = "mock"` answer. On total provider failure it degrades gracefully to a `PROGRAM_RULE` notice (still `200`/`201`).
 
 ### 5.11 AI Chat
 
@@ -682,8 +695,9 @@ Behavior notes:
 
 - `question` length must be `1..1000`.
 - `ADMIN` receives `403 FORBIDDEN` here.
-- Current implementation is a mock answer generator plus AI usage logging.
-- Current response values are `provider = "PROGRAM_RULE"`, `model = "mock"`, and usually `sourceUpdatedAt = null`.
+- Routes through the AI router `GENERAL_CHAT` (NVIDIA Super → Qwen Plus) with AI usage logging.
+- Under `AI_MOCK_MODE=true` the response is the deterministic `provider = "PROGRAM_RULE"`, `model = "mock"` mock.
+  Under `AI_MOCK_MODE=false` `provider` is `NVIDIA`/`QWEN`; on total provider failure it degrades to a `PROGRAM_RULE` notice.
 
 ## 6. Backend-only Endpoints
 
@@ -706,8 +720,20 @@ All `/api/jobs/*` routes are `@Public()` but protected by `CronSecretGuard`.
 
 - Required header: `x-cron-secret: <CRON_SECRET>`
 - No JWT cookie is used for these routes.
-- All current job routes return `JobResult`.
-- All current job routes are Phase 1 stubs that immediately transition stored `JobRun` rows to `DONE`.
+- All job routes return `JobResult` and wrap the work in a `JobRun` (`RUNNING → DONE`, or `FAILED`
+  with `metadata.error` on an unhandled error — still HTTP `200`).
+- **Real (data fetch):** `sync-teams`, `sync-players`, `sync-fixtures`, `sync-results` (football-data.org)
+  and `fetch-news` (Guardian + NewsAPI). Each **skips to `DONE`** with `metadata.skipped=true` when its
+  data-source API key is not configured (no external call), so they are safe without keys. Sync counts
+  (`fetched/created/updated/failed`) are recorded in `JobRun.metadata`. `sync-players` is throttled and
+  best-effort (squad availability depends on the football-data tier). News stores title/summary/snippet/
+  source URL only and dedupes by `sourceUrl` (existing rows, incl. translations, are left untouched).
+- **Real (AI generation, via AiRouter):** `generate-news-summary` (摘要/分類/標籤 → `NewsArticle` + tags),
+  `generate-player-ratings` (六邊形評分 → `AiReport`，真實模式另寫回 `Player` 分數),
+  `generate-match-analysis` (賽前分析 → `AiReport`，供 `/analysis` 與 `/prediction`；**僅產生未開賽 `SCHEDULED` 的比賽**，含三種最可能比分),
+  `generate-champion-predictions` (SYSTEM 觸發的 A/B/final run)。各任務以 `AiReport.sourceSnapshotHash`
+  判斷「資料未變則跳過」,單次最多處理 200 筆(`metadata` 含 `scanned/generated/skipped/failed`),
+  其餘留待下次重跑;在 `AI_MOCK_MODE=true` 下產生 `PROGRAM_RULE` 示範報告(不呼叫外部)。
 
 Current implemented routes:
 
@@ -742,10 +768,15 @@ Failure note:
 ### NOT_IMPLEMENTED
 
 - Route-level check: no product endpoint listed in `worldcup_ai_backend_agent_docs/07_BACKEND_READONLY_FRONTEND_CONTRACT.md` is missing. The current backend implements every route from that list.
-- Real NVIDIA/Qwen-backed AI chat is not implemented. `POST /api/ai/chat` and all `*/deep-chat` routes currently return deterministic mock responses from `PROGRAM_RULE`.
-- Real news translation is not implemented. `POST /api/news/:newsId/translate` writes a mock translated string prefixed with `【AI_MOCK_MODE 翻譯】`.
-- Real champion-prediction recalculation is not implemented. `POST /api/champion-predictions/recalculate` creates a mock run from stored team `championScore` values.
-- Real external sync/generation work is not implemented. All `/api/jobs/*` routes are Phase 1 stubs that only create/update `JobRun` rows.
+- Phase 2 (done): real NVIDIA/Qwen routing is wired for `POST /api/ai/chat`, all `*/deep-chat` routes, `POST /api/news/:newsId/translate`, and `POST /api/champion-predictions/recalculate` via the `AiRouterService`. Behavior depends on `AI_MOCK_MODE` (mock short-circuit) and degrades gracefully on provider failure.
+- AI quota enforcement (`429 AI_QUOTA_EXCEEDED`) is not yet enforced; every provider call is still recorded in `AiUsageLog`.
+- Data-fetch jobs are implemented: `sync-teams` / `sync-players` / `sync-fixtures` / `sync-results`
+  (football-data.org) and `fetch-news` (Guardian + NewsAPI), each with a no-key skip.
+- AI-generation jobs are implemented: `generate-news-summary` / `generate-player-ratings` /
+  `generate-match-analysis` / `generate-champion-predictions` (via AiRouter; skip-if-unchanged via
+  `sourceSnapshotHash`; bounded at 200/run; `PROGRAM_RULE` reports under `AI_MOCK_MODE`).
+- Not yet implemented: quota-429 enforcement, group-stage (non-knockout) elimination derivation, and
+  an automatic scheduler (jobs are still triggered manually via `/api/jobs/*`).
 
 ### SPEC_MISMATCH
 

@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { buildPaginationMeta, Paginated } from '../common/dto/api-response.types';
 import { ChatQuestionDto } from '../common/dto/chat.dto';
 import type {
@@ -10,7 +11,7 @@ import type {
 } from '../common/dto/contracts';
 import { NonAdminUserGuard } from '../common/guards/non-admin-user.guard';
 import { PremiumOnlyGuard } from '../common/guards/premium-only.guard';
-import { buildMockChatAnswer } from '../common/utils/ai-mock.util';
+import type { AuthenticatedUser } from '../common/types/authenticated-user';
 import { ListMatchesQueryDto } from './dto/list-matches-query.dto';
 import { type MatchDetailDto, MatchesService } from './matches.service';
 
@@ -53,14 +54,11 @@ export class MatchesController {
 
   @Post(':matchId/deep-chat')
   @UseGuards(PremiumOnlyGuard)
-  async deepChat(
+  deepChat(
+    @CurrentUser() user: AuthenticatedUser,
     @Param('matchId') matchId: string,
     @Body() dto: ChatQuestionDto,
   ): Promise<ChatAnswerDto> {
-    const match = await this.matches.getById(matchId);
-    return buildMockChatAnswer(dto.question, {
-      scope: `賽事：${match.homeTeam.nameEn} vs ${match.awayTeam.nameEn}`,
-      sourceUpdatedAt: match.sourceUpdatedAt,
-    });
+    return this.matches.deepChat(matchId, user.id, dto.question);
   }
 }

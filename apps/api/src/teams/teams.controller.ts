@@ -12,7 +12,7 @@ import type {
 } from '../common/dto/contracts';
 import { NonAdminUserGuard } from '../common/guards/non-admin-user.guard';
 import { PremiumOnlyGuard } from '../common/guards/premium-only.guard';
-import { buildMockChatAnswer } from '../common/utils/ai-mock.util';
+import type { AuthenticatedUser } from '../common/types/authenticated-user';
 import { ListTeamsQueryDto } from './dto/list-teams-query.dto';
 import { TeamsService } from './teams.service';
 
@@ -50,11 +50,11 @@ export class TeamsController {
 
   @Post(':teamId/deep-chat')
   @UseGuards(PremiumOnlyGuard)
-  async deepChat(
+  deepChat(
+    @CurrentUser() user: AuthenticatedUser,
     @Param('teamId') teamId: string,
     @Body() dto: ChatQuestionDto,
   ): Promise<ChatAnswerDto> {
-    const team = await this.teams.getById(teamId);
-    return buildMockChatAnswer(dto.question, { scope: `國家隊：${team.nameEn}` });
+    return this.teams.deepChat(teamId, user.id, dto.question);
   }
 }

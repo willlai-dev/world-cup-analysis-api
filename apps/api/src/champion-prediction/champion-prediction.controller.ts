@@ -6,7 +6,6 @@ import type { ChampionPredictionResponse, ChatAnswerDto } from '../common/dto/co
 import { NonAdminUserGuard } from '../common/guards/non-admin-user.guard';
 import { PremiumOnlyGuard } from '../common/guards/premium-only.guard';
 import type { AuthenticatedUser } from '../common/types/authenticated-user';
-import { buildMockChatAnswer } from '../common/utils/ai-mock.util';
 import { ChampionPredictionService } from './champion-prediction.service';
 
 @ApiTags('champion-predictions')
@@ -34,7 +33,10 @@ export class ChampionPredictionController {
 
   @Post('deep-chat')
   @UseGuards(PremiumOnlyGuard)
-  deepChat(@Body() dto: ChatQuestionDto): ChatAnswerDto {
-    return buildMockChatAnswer(dto.question, { scope: '冠軍預測' });
+  deepChat(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: ChatQuestionDto,
+  ): Promise<ChatAnswerDto> {
+    return this.champion.deepChat(user.id, dto.question);
   }
 }

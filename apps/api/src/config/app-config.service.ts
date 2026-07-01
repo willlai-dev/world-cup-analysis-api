@@ -81,4 +81,24 @@ export class AppConfigService {
       modelFlashFallback: this.get('QWEN_MODEL_FLASH_FALLBACK'),
     };
   }
+
+  get footballData() {
+    return {
+      apiKey: this.get('FOOTBALL_DATA_API_KEY'),
+      baseUrl: this.get('FOOTBALL_DATA_BASE_URL'),
+      competition: this.get('FOOTBALL_DATA_COMPETITION'),
+    };
+  }
+  get guardian() {
+    return {
+      apiKey: this.get('GUARDIAN_API_KEY'),
+      baseUrl: this.get('GUARDIAN_BASE_URL'),
+    };
+  }
+  get newsApi() {
+    return {
+      apiKey: this.get('NEWS_API_KEY'),
+      baseUrl: this.get('NEWS_API_BASE_URL'),
+    };
+  }
 }

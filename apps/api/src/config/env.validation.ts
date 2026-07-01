@@ -41,8 +41,12 @@ export const envSchema = z.object({
   QWEN_MODEL_FLASH_FALLBACK: z.string().default('qwen3.5-flash'),
 
   FOOTBALL_DATA_API_KEY: z.string().optional().default(''),
+  FOOTBALL_DATA_BASE_URL: z.string().default('https://api.football-data.org/v4'),
+  FOOTBALL_DATA_COMPETITION: z.string().default('WC'),
   GUARDIAN_API_KEY: z.string().optional().default(''),
+  GUARDIAN_BASE_URL: z.string().default('https://content.guardianapis.com'),
   NEWS_API_KEY: z.string().optional().default(''),
+  NEWS_API_BASE_URL: z.string().default('https://newsapi.org/v2'),
 
   AI_MOCK_MODE: boolFromString(true),
 });

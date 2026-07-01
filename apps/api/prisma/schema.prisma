@@ -214,6 +214,7 @@ model Team {
   midfieldScore Float?
   defenseScore  Float?
   statusScore   Float?
+  isEliminated  Boolean        @default(false)
 
   players         Player[]
   homeMatches     Match[]                   @relation("HomeTeam")
@@ -230,6 +231,7 @@ model Team {
   @@index([groupName])
   @@index([ratingTier])
   @@index([championScore])
+  @@index([isEliminated])
 }
 
 model Player {

@@ -1,11 +1,12 @@
 import { Body, Controller, Get, HttpCode, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { buildPaginationMeta, Paginated } from '../common/dto/api-response.types';
 import { ChatQuestionDto } from '../common/dto/chat.dto';
 import type { ChatAnswerDto, NewsSummary } from '../common/dto/contracts';
 import { NonAdminUserGuard } from '../common/guards/non-admin-user.guard';
 import { PremiumOnlyGuard } from '../common/guards/premium-only.guard';
-import { buildMockChatAnswer } from '../common/utils/ai-mock.util';
+import type { AuthenticatedUser } from '../common/types/authenticated-user';
 import { ListNewsQueryDto } from './dto/list-news-query.dto';
 import { type NewsDetailDto, NewsService } from './news.service';
 
@@ -29,20 +30,20 @@ export class NewsController {
   @Post(':newsId/translate')
   @HttpCode(200)
   @UseGuards(PremiumOnlyGuard)
-  translate(@Param('newsId') newsId: string): Promise<NewsDetailDto> {
-    return this.news.translate(newsId);
+  translate(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('newsId') newsId: string,
+  ): Promise<NewsDetailDto> {
+    return this.news.translate(newsId, user.id);
   }
 
   @Post(':newsId/deep-chat')
   @UseGuards(PremiumOnlyGuard)
-  async deepChat(
+  deepChat(
+    @CurrentUser() user: AuthenticatedUser,
     @Param('newsId') newsId: string,
     @Body() dto: ChatQuestionDto,
   ): Promise<ChatAnswerDto> {
-    const news = await this.news.getById(newsId);
-    return buildMockChatAnswer(dto.question, {
-      scope: `新聞：${news.titleEn}`,
-      sourceUpdatedAt: news.publishedAt,
-    });
+    return this.news.deepChat(newsId, user.id, dto.question);
   }
 }

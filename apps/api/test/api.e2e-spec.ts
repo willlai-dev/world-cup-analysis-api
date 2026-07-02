@@ -144,9 +144,11 @@ describe("AI World Cup Analyst API (e2e)", () => {
     expect(res.status).toBe(200);
     expect(res.body.data.runId).toBeDefined();
     expect(["DONE", "RUNNING", "PENDING"]).toContain(res.body.data.status);
-    // Mock runs skip the A/B legs → divergence present but not computable.
+    // Mock runs skip the A/B legs → divergence present but not computable,
+    // and there is no polish leg either.
     expect(res.body.data.divergence).toMatchObject({ computable: false });
     expect(Array.isArray(res.body.data.divergence.teamDeltas)).toBe(true);
+    expect(res.body.data.polishedReport).toBeNull();
   });
 
   it("13. Wrong cron secret -> 401", async () => {

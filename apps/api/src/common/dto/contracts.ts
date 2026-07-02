@@ -157,6 +157,8 @@ export type ChampionPredictionResponse = {
   finalReport?: AiReportDto | null;
   nvidiaReport?: AiReportDto | null;
   qwenReport?: AiReportDto | null;
+  /** FINAL_REPORT_POLISH output (zh markdown); null for mock/legacy runs. */
+  polishedReport?: AiReportDto | null;
   divergence?: ChampionDivergence;
 };
 

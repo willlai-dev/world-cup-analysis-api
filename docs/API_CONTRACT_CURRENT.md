@@ -388,6 +388,7 @@ type ChampionPredictionResponse = {
   finalReport?: AiReportDto | null;
   nvidiaReport?: AiReportDto | null;
   qwenReport?: AiReportDto | null;
+  polishedReport?: AiReportDto | null; // FINAL_REPORT_POLISH zh markdown; null for mock/legacy runs
   divergence?: ChampionDivergence;
 };
 
@@ -705,6 +706,12 @@ Behavior notes:
     `finalReport`. Entries are built from the validated final output.
   - If the final model fails or returns schema-invalid output, the run degrades to the `championScore`
     ranking (so `entries` is always populated) and the failed legs are linked as `FAILED` reports.
+- **Final report polish (Phase 3):** after a successful real-mode final leg, a `FINAL_REPORT_POLISH`
+  step (Qwen Plus → NVIDIA Ultra) rewrites the consensus into fluent zh-TW markdown, persisted as an
+  `AiReport` bound to the run (`entityId = runId`) and returned as `polishedReport`. Env-gated by
+  `CHAMPION_POLISH_ENABLED` (default true); `null` for mock runs, legacy runs, disabled polish, or a
+  failed polish attempt (the run itself is unaffected). Frontend should fall back to
+  `finalReport`/`entries` when `polishedReport` is `null`.
 - **Model divergence (Phase 3):** every `ChampionPredictionResponse` includes `divergence`, computed
   program-side from the A/B legs' `structuredJson` rankings (`{ analysis, entries[{teamName, rank,
   probabilityText, keyReason}], dataLimitations }`). For runs created before this change, mock runs

@@ -97,6 +97,8 @@ export const envSchema = z.object({
   PLAYER_STATUS_NEWS_DAYS: z.coerce.number().int().positive().default(7),
   /** How far back news-impact generation looks for candidate articles. */
   NEWS_IMPACT_LOOKBACK_DAYS: z.coerce.number().int().positive().default(7),
+  /** Run FINAL_REPORT_POLISH after each real-mode champion run. */
+  CHAMPION_POLISH_ENABLED: boolFromString(true),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -8,6 +8,7 @@ describe('ChampionPredictionService.generateSystemRun', () => {
     const prisma = {
       team: { findMany: jest.fn() },
       championPredictionRun: { create: jest.fn() },
+      aiReport: { findFirst: jest.fn().mockResolvedValue(null) },
     };
     const config = { aiMockMode: true } as unknown as AppConfigService;
     const router = {} as unknown as AiRouterService;
@@ -98,6 +99,7 @@ describe('ChampionPredictionService divergence (getLatest)', () => {
         findUnique: jest.fn(({ where }: { where: { id: string } }) =>
           Promise.resolve(reports[where.id] ?? null),
         ),
+        findFirst: jest.fn().mockResolvedValue(null),
       },
     };
     const config = { aiMockMode: true } as unknown as AppConfigService;
@@ -169,5 +171,104 @@ describe('ChampionPredictionService divergence (getLatest)', () => {
     const divergence = (await service.getLatest())!.divergence!;
     expect(divergence.computable).toBe(false);
     expect(divergence.teamDeltas).toEqual([]);
+  });
+});
+
+describe('ChampionPredictionService.recalculate polish (real mode)', () => {
+  function buildReal(polishEnabled: boolean) {
+    const prisma = {
+      team: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 't1',
+            nameEn: 'Brazil',
+            nameZh: '巴西',
+            fifaCode: 'BRA',
+            worldRanking: 1,
+            ratingTier: 'S',
+            championScore: 80,
+            formScore: 1,
+            attackScore: 1,
+            midfieldScore: 1,
+            defenseScore: 1,
+            statusScore: 1,
+          },
+        ]),
+      },
+      championPredictionRun: {
+        create: jest.fn().mockResolvedValue({
+          id: 'run1',
+          status: 'DONE',
+          createdAt: new Date(),
+          completedAt: new Date(),
+          nvidiaReportId: 'ra',
+          qwenReportId: 'rb',
+          finalReportId: 'rf',
+          entries: [],
+        }),
+      },
+      aiReport: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
+    };
+    const modelLeg = { analysis: 'a', entries: [], dataLimitations: [] };
+    const runReport = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: true, reportId: 'ra', data: modelLeg, content: 'a' })
+      .mockResolvedValueOnce({ ok: true, reportId: 'rb', data: modelLeg, content: 'b' })
+      .mockResolvedValueOnce({
+        ok: true,
+        reportId: 'rf',
+        content: 'f',
+        data: {
+          summary: 's',
+          entries: [
+            {
+              teamName: 'Brazil',
+              rank: 1,
+              probabilityText: '40%',
+              strengths: [],
+              risks: [],
+              aiComment: 'c',
+            },
+          ],
+          dataLimitations: [],
+        },
+      })
+      .mockResolvedValue({ ok: true, reportId: 'rp', data: null, content: 'polished' });
+    const config = {
+      aiMockMode: false,
+      championPolishEnabled: polishEnabled,
+    } as unknown as AppConfigService;
+    const service = new ChampionPredictionService(
+      prisma as unknown as PrismaService,
+      config,
+      { runReport } as unknown as AiRouterService,
+    );
+    return { service, runReport };
+  }
+
+  it('runs FINAL_REPORT_POLISH bound to the run id after a successful final leg', async () => {
+    const { service, runReport } = buildReal(true);
+
+    const res = await service.recalculate('u1');
+
+    expect(runReport).toHaveBeenCalledTimes(4);
+    expect(runReport.mock.calls[3][0]).toMatchObject({
+      taskType: 'FINAL_REPORT_POLISH',
+      reportType: 'FINAL_REPORT_POLISH',
+      entityId: 'run1',
+      userId: 'u1',
+    });
+    expect(res.polishedReport).toBeNull(); // findFirst mocked to null
+  });
+
+  it('skips polish when CHAMPION_POLISH_ENABLED=false', async () => {
+    const { service, runReport } = buildReal(false);
+
+    await service.recalculate('u1');
+
+    expect(runReport).toHaveBeenCalledTimes(3);
   });
 });

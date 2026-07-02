@@ -5,7 +5,7 @@ import {
   JobStatus,
   type Team,
 } from '@prisma/client';
-import { AiRouterService } from '../ai/ai-router.service';
+import { AiRouterService, type ReportResult } from '../ai/ai-router.service';
 import {
   type ChampionAnalysisOutput,
   ChampionAnalysisOutputSchema,
@@ -193,7 +193,45 @@ export class ChampionPredictionService {
       qwenReportId: reportB.reportId,
       finalReportId: finalReport.reportId,
     });
+    await this.polishFinalReport(run.id, userId, finalReport);
     return this.buildResponse(run);
+  }
+
+  /**
+   * FINAL_REPORT_POLISH leg (real mode only, env-gated): rewrites the final
+   * consensus into a fluent zh-TW markdown report, persisted as its own
+   * AiReport bound to the run via entityId — no schema change. Failure is
+   * tolerated: the run is already DONE; buildResponse just returns null.
+   */
+  private async polishFinalReport(
+    runId: string,
+    userId: string | null,
+    finalReport: ReportResult<ChampionAnalysisOutput>,
+  ): Promise<void> {
+    if (
+      !this.config.championPolishEnabled ||
+      !finalReport.ok ||
+      !finalReport.data
+    ) {
+      return;
+    }
+    await this.router.runReport({
+      taskType: 'FINAL_REPORT_POLISH',
+      userId,
+      entityId: runId,
+      reportType: 'FINAL_REPORT_POLISH',
+      instruction:
+        '請將以下冠軍預測最終報告潤飾為一篇流暢、結構清晰的繁體中文 markdown 報告' +
+        '（含標題、總覽、逐隊要點與資料侷限）。只做文字潤飾與重組，' +
+        '不可新增原文沒有的事實、數據或排名。',
+      context: {
+        summary: finalReport.data.summary,
+        entries: finalReport.data.entries,
+        dataLimitations: finalReport.data.dataLimitations,
+      },
+      scope: '冠軍預測',
+      mockContent: '【AI_MOCK_MODE】潤稿示範。',
+    });
   }
 
   private createRun(
@@ -267,11 +305,13 @@ export class ChampionPredictionService {
       entries: Parameters<typeof toChampionEntrySummary>[0][];
     },
   ): Promise<ChampionPredictionResponse> {
-    const [nvidiaReport, qwenReport, finalReport] = await Promise.all([
-      this.getReport(run.nvidiaReportId),
-      this.getReport(run.qwenReportId),
-      this.getReport(run.finalReportId),
-    ]);
+    const [nvidiaReport, qwenReport, finalReport, polishedReport] =
+      await Promise.all([
+        this.getReport(run.nvidiaReportId),
+        this.getReport(run.qwenReportId),
+        this.getReport(run.finalReportId),
+        this.getPolishedReport(run.id),
+      ]);
     return {
       runId: run.id,
       status: run.status,
@@ -281,8 +321,23 @@ export class ChampionPredictionService {
       finalReport,
       nvidiaReport,
       qwenReport,
+      polishedReport,
       divergence: this.computeDivergence(nvidiaReport, qwenReport),
     };
+  }
+
+  /** Polish report is bound to the run by entityId (not a run FK column). */
+  private async getPolishedReport(runId: string): Promise<AiReportDto | null> {
+    const report = await this.prisma.aiReport.findFirst({
+      where: {
+        entityType: 'CHAMPION_PREDICTION',
+        entityId: runId,
+        reportType: 'FINAL_REPORT_POLISH',
+        status: 'DONE',
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return report ? toAiReportDto(report) : null;
   }
 
   /**

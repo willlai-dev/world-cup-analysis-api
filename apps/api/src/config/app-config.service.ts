@@ -81,6 +81,9 @@ export class AppConfigService {
   get newsImpactLookbackDays(): number {
     return this.get("NEWS_IMPACT_LOOKBACK_DAYS");
   }
+  get championPolishEnabled(): boolean {
+    return this.get("CHAMPION_POLISH_ENABLED");
+  }
   get aiQuota() {
     return {
       generalChatUserPerDay: this.get("AI_QUOTA_GENERAL_CHAT_USER_PER_DAY"),

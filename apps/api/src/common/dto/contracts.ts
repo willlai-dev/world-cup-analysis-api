@@ -128,6 +128,26 @@ export type ChampionPredictionEntrySummary = {
   aiComment?: string | null;
 };
 
+/** Per-team rank comparison between the NVIDIA and Qwen champion legs. */
+export type ChampionDivergenceTeamDelta = {
+  teamName: string;
+  nvidiaRank?: number | null;
+  qwenRank?: number | null;
+  /** |nvidiaRank - qwenRank| when both models ranked the team. */
+  rankDelta?: number | null;
+};
+
+/**
+ * Program-computed NVIDIA-vs-Qwen divergence. `computable` is false for runs
+ * whose A/B reports predate structured output (or mock runs, which skip the
+ * per-model legs entirely).
+ */
+export type ChampionDivergence = {
+  computable: boolean;
+  summary: string;
+  teamDeltas: ChampionDivergenceTeamDelta[];
+};
+
 export type ChampionPredictionResponse = {
   runId: string;
   status: 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED';
@@ -137,6 +157,7 @@ export type ChampionPredictionResponse = {
   finalReport?: AiReportDto | null;
   nvidiaReport?: AiReportDto | null;
   qwenReport?: AiReportDto | null;
+  divergence?: ChampionDivergence;
 };
 
 export type ChatAnswerDto = {

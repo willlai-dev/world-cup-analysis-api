@@ -366,6 +366,19 @@ type ChampionPredictionEntrySummary = {
   aiComment?: string | null;
 };
 
+type ChampionDivergenceTeamDelta = {
+  teamName: string;
+  nvidiaRank?: number | null;
+  qwenRank?: number | null;
+  rankDelta?: number | null; // |nvidiaRank - qwenRank| when both ranked the team
+};
+
+type ChampionDivergence = {
+  computable: boolean; // false for legacy/mock runs without structured A/B ranks
+  summary: string; // zh-TW human-readable comparison
+  teamDeltas: ChampionDivergenceTeamDelta[];
+};
+
 type ChampionPredictionResponse = {
   runId: string;
   status: JobStatus;
@@ -375,6 +388,7 @@ type ChampionPredictionResponse = {
   finalReport?: AiReportDto | null;
   nvidiaReport?: AiReportDto | null;
   qwenReport?: AiReportDto | null;
+  divergence?: ChampionDivergence;
 };
 
 type ChatAnswerDto = {
@@ -683,6 +697,11 @@ Behavior notes:
     `finalReport`. Entries are built from the validated final output.
   - If the final model fails or returns schema-invalid output, the run degrades to the `championScore`
     ranking (so `entries` is always populated) and the failed legs are linked as `FAILED` reports.
+- **Model divergence (Phase 3):** every `ChampionPredictionResponse` includes `divergence`, computed
+  program-side from the A/B legs' `structuredJson` rankings (`{ analysis, entries[{teamName, rank,
+  probabilityText, keyReason}], dataLimitations }`). For runs created before this change, mock runs
+  (no A/B reports), or legs whose structured output is missing, `divergence.computable` is `false`
+  and `teamDeltas` is empty — frontend can then fall back to showing the two raw reports side by side.
 - `POST /api/champion-predictions/deep-chat` routes through the AI router. When `AI_MOCK_MODE=false` it returns a real grounded answer (`provider` `NVIDIA`/`QWEN`); under `AI_MOCK_MODE=true` it returns the deterministic `PROGRAM_RULE` / `model = "mock"` answer. On total provider failure it degrades gracefully to a `PROGRAM_RULE` notice (still `200`/`201`).
 
 ### 5.11 AI Chat

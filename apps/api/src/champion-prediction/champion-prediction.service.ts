@@ -10,8 +10,14 @@ import {
   type ChampionAnalysisOutput,
   ChampionAnalysisOutputSchema,
 } from '../ai/schemas/champion-analysis.schema';
+import {
+  type ChampionModelAnalysis,
+  ChampionModelAnalysisSchema,
+} from '../ai/schemas/champion-model-analysis.schema';
 import type {
   AiReportDto,
+  ChampionDivergence,
+  ChampionDivergenceTeamDelta,
   ChampionPredictionResponse,
   ChatAnswerDto,
 } from '../common/dto/contracts';
@@ -24,6 +30,20 @@ const TOP_N = 8;
 const MOCK_COMMENT =
   '【AI_MOCK_MODE】重新計算的示範結果，正式版本將以資料庫快照與雙模型分析為準。';
 const DEGRADE_COMMENT = 'AI 分析暫時無法使用，此為依資料庫冠軍分數排序的初步結果。';
+
+/** JSON shape appended to both per-model leg instructions. */
+const MODEL_LEG_FORMAT =
+  '請「只」輸出 JSON 物件，格式為：{ "analysis": string, "entries": [{ "teamName": string, ' +
+  '"rank": number, "probabilityText": string, "keyReason": string }], "dataLimitations": string[] }。' +
+  'teamName 必須是提供清單中的英文名稱（name 欄位），rank 由 1 開始。';
+
+// Dormant under the current champion mock path (it bypasses the router), kept
+// so runReport stays well-defined if that ever changes.
+const MODEL_LEG_MOCK: ChampionModelAnalysis = {
+  analysis: '【AI_MOCK_MODE】示範模型分析。',
+  entries: [],
+  dataLimitations: ['AI_MOCK_MODE'],
+};
 
 type EntryCreate = {
   teamId: string;
@@ -114,25 +134,33 @@ export class ChampionPredictionService {
       statusScore: t.statusScore,
     }));
 
-    const reportA = await this.router.runReport({
+    const reportA = await this.router.runReport<ChampionModelAnalysis>({
       taskType: 'CHAMPION_PREDICTION_A',
       userId,
       reportType: 'CHAMPION_ANALYSIS_NVIDIA',
       instruction:
-        '請分析本屆世界盃各參賽國家隊的奪冠競爭格局，逐隊說明其優勢與風險（資料庫缺實力數據時可用公開足球知識並標註推估）。',
+        '請分析本屆世界盃各參賽國家隊的奪冠競爭格局，在 analysis 中逐隊說明其優勢與風險，並在 entries 給出你的奪冠排名' +
+        '（資料庫缺實力數據時可用公開足球知識並標註推估）。' +
+        MODEL_LEG_FORMAT,
       context: { teams: teamContext },
       scope: '冠軍預測',
+      schema: ChampionModelAnalysisSchema,
+      mockData: MODEL_LEG_MOCK,
       allowModelKnowledge: true,
     });
 
-    const reportB = await this.router.runReport({
+    const reportB = await this.router.runReport<ChampionModelAnalysis>({
       taskType: 'CHAMPION_PREDICTION_B',
       userId,
       reportType: 'CHAMPION_ANALYSIS_QWEN',
       instruction:
-        '請為各國家隊的奪冠可能性排序，並說明排序理由與關鍵變數（資料庫缺實力數據時可用公開足球知識並標註推估）。',
+        '請為各國家隊的奪冠可能性排序，在 analysis 中說明排序理由與關鍵變數，並在 entries 給出你的奪冠排名' +
+        '（資料庫缺實力數據時可用公開足球知識並標註推估）。' +
+        MODEL_LEG_FORMAT,
       context: { teams: teamContext },
       scope: '冠軍預測',
+      schema: ChampionModelAnalysisSchema,
+      mockData: MODEL_LEG_MOCK,
       allowModelKnowledge: true,
     });
 
@@ -145,7 +173,11 @@ export class ChampionPredictionService {
         '{ "summary": string, "entries": [{ "teamName": string, "rank": number, ' +
         '"probabilityText": string, "strengths": string[], "risks": string[], "aiComment": string }], ' +
         '"dataLimitations": string[] }。teamName 必須是提供清單中的英文名稱（name 欄位）。',
-      context: { teams: teamContext, modelA: reportA.content, modelB: reportB.content },
+      context: {
+        teams: teamContext,
+        modelA: reportA.data?.analysis || reportA.content,
+        modelB: reportB.data?.analysis || reportB.content,
+      },
       scope: '冠軍預測',
       schema: ChampionAnalysisOutputSchema,
       allowModelKnowledge: true,
@@ -249,7 +281,93 @@ export class ChampionPredictionService {
       finalReport,
       nvidiaReport,
       qwenReport,
+      divergence: this.computeDivergence(nvidiaReport, qwenReport),
     };
+  }
+
+  /**
+   * Program-side NVIDIA-vs-Qwen comparison from the persisted A/B structured
+   * rankings — no AI call. Legacy runs (pre-schema A/B) and mock runs (no A/B
+   * reports at all) come back `computable: false`.
+   */
+  private computeDivergence(
+    nvidiaReport: AiReportDto | null,
+    qwenReport: AiReportDto | null,
+  ): ChampionDivergence {
+    const nvidia = this.parseModelRanks(nvidiaReport);
+    const qwen = this.parseModelRanks(qwenReport);
+    if (!nvidia || !qwen) {
+      return {
+        computable: false,
+        summary: '此 run 缺少雙模型結構化排名（舊版報告或 mock 模式），無法計算模型分歧。',
+        teamDeltas: [],
+      };
+    }
+
+    const names = [...new Set([...nvidia.keys(), ...qwen.keys()])];
+    const teamDeltas: ChampionDivergenceTeamDelta[] = names
+      .map((teamName) => {
+        const nvidiaRank = nvidia.get(teamName) ?? null;
+        const qwenRank = qwen.get(teamName) ?? null;
+        return {
+          teamName,
+          nvidiaRank,
+          qwenRank,
+          rankDelta:
+            nvidiaRank !== null && qwenRank !== null
+              ? Math.abs(nvidiaRank - qwenRank)
+              : null,
+        };
+      })
+      .sort(
+        (a, b) =>
+          Math.min(a.nvidiaRank ?? 99, a.qwenRank ?? 99) -
+          Math.min(b.nvidiaRank ?? 99, b.qwenRank ?? 99),
+      );
+
+    const topA = teamDeltas.find((d) => d.nvidiaRank === 1)?.teamName;
+    const topB = teamDeltas.find((d) => d.qwenRank === 1)?.teamName;
+    const shared = teamDeltas.filter((d) => d.rankDelta !== null);
+    const maxDelta = shared.reduce<ChampionDivergenceTeamDelta | null>(
+      (max, d) => ((d.rankDelta ?? 0) > (max?.rankDelta ?? -1) ? d : max),
+      null,
+    );
+
+    const parts: string[] = [];
+    if (topA && topB) {
+      parts.push(
+        topA === topB
+          ? `雙模型冠軍首選一致：${topA}`
+          : `冠軍首選分歧：NVIDIA 看好 ${topA}，Qwen 看好 ${topB}`,
+      );
+    }
+    parts.push(`共同排名 ${shared.length} 隊`);
+    if (maxDelta && (maxDelta.rankDelta ?? 0) > 0) {
+      parts.push(
+        `名次差最大：${maxDelta.teamName}（NVIDIA 第 ${maxDelta.nvidiaRank} vs Qwen 第 ${maxDelta.qwenRank}，相差 ${maxDelta.rankDelta} 名）`,
+      );
+    } else if (shared.length > 0) {
+      parts.push('共同排名完全一致');
+    }
+    return { computable: true, summary: `${parts.join('；')}。`, teamDeltas };
+  }
+
+  /** teamName → rank (rank 0 = unranked → dropped). null when not structured. */
+  private parseModelRanks(report: AiReportDto | null): Map<string, number> | null {
+    if (!report?.structuredJson) {
+      return null;
+    }
+    const parsed = ChampionModelAnalysisSchema.safeParse(report.structuredJson);
+    if (!parsed.success || parsed.data.entries.length === 0) {
+      return null;
+    }
+    const ranks = new Map<string, number>();
+    for (const entry of parsed.data.entries) {
+      if (entry.rank > 0 && !ranks.has(entry.teamName)) {
+        ranks.set(entry.teamName, entry.rank);
+      }
+    }
+    return ranks.size > 0 ? ranks : null;
   }
 
   private async getReport(reportId: string | null): Promise<AiReportDto | null> {

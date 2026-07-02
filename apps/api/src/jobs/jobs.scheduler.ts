@@ -11,6 +11,7 @@ const FULL_PIPELINE: JobType[] = [
   JobType.SYNC_RESULTS,
   JobType.FETCH_NEWS,
   JobType.GENERATE_NEWS_SUMMARY,
+  JobType.GENERATE_NEWS_IMPACT,
   JobType.GENERATE_PLAYER_RATINGS,
   JobType.GENERATE_MATCH_ANALYSIS,
   JobType.GENERATE_CHAMPION_PREDICTIONS,
@@ -26,9 +27,17 @@ const REFRESH_PIPELINE: JobType[] = [
   JobType.SYNC_RESULTS,
   JobType.FETCH_NEWS,
   JobType.GENERATE_NEWS_SUMMARY,
+  JobType.GENERATE_NEWS_IMPACT,
   JobType.GENERATE_MATCH_ANALYSIS,
   JobType.GENERATE_CHAMPION_PREDICTIONS,
 ];
+
+/**
+ * 06:00 player status/injury pass — deliberately staggered 2h after the 04:00
+ * full pipeline so (a) the day's news is already fetched+tagged and (b) it
+ * doesn't pile onto NVIDIA while the main pipeline is generating (503s).
+ */
+const PLAYER_STATUS_PIPELINE: JobType[] = [JobType.GENERATE_PLAYER_STATUS];
 
 /**
  * Runs the sync + generate pipeline on a schedule. Two slots (04:00 full,
@@ -51,6 +60,11 @@ export class JobsScheduler {
   @Cron('0 12 * * *')
   runMiddayRefresh(): Promise<void> {
     return this.runPipeline('midday-refresh', REFRESH_PIPELINE);
+  }
+
+  @Cron('0 6 * * *')
+  runPlayerStatus(): Promise<void> {
+    return this.runPipeline('player-status', PLAYER_STATUS_PIPELINE);
   }
 
   private async runPipeline(label: string, pipeline: JobType[]): Promise<void> {

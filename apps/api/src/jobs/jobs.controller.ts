@@ -50,6 +50,12 @@ export class JobsController {
     return this.jobs.run(JobType.GENERATE_NEWS_SUMMARY);
   }
 
+  @Post('generate-news-impact')
+  @HttpCode(200)
+  generateNewsImpact(): Promise<JobResult> {
+    return this.jobs.run(JobType.GENERATE_NEWS_IMPACT);
+  }
+
   @Post('generate-match-analysis')
   @HttpCode(200)
   generateMatchAnalysis(): Promise<JobResult> {
@@ -60,6 +66,12 @@ export class JobsController {
   @HttpCode(200)
   generatePlayerRatings(): Promise<JobResult> {
     return this.jobs.run(JobType.GENERATE_PLAYER_RATINGS);
+  }
+
+  @Post('generate-player-status')
+  @HttpCode(200)
+  generatePlayerStatus(): Promise<JobResult> {
+    return this.jobs.run(JobType.GENERATE_PLAYER_STATUS);
   }
 
   @Post('generate-champion-predictions')

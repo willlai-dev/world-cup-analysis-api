@@ -16,11 +16,17 @@ import {
   type PlayerHexagonOutput,
   PlayerHexagonOutputSchema,
 } from "../ai/schemas/player-hexagon.schema";
+import {
+  type PlayerStatusOutput,
+  PlayerStatusOutputSchema,
+} from "../ai/schemas/player-status.schema";
 import type {
   AiReportDto,
   ChatAnswerDto,
   PlayerSummary,
 } from "../common/dto/contracts";
+import { sleep } from "../common/utils/sleep.util";
+import { AppConfigService } from "../config/app-config.service";
 import { toAiReportDto, toPlayerSummary } from "../mappers";
 import { PrismaService } from "../prisma/prisma.service";
 import type { ListPlayersQueryDto } from "./dto/list-players-query.dto";
@@ -41,6 +47,13 @@ const PLAYER_MOCK: PlayerHexagonOutput = {
   dataLimitations: ["示範模式"],
 };
 
+const PLAYER_STATUS_MOCK: PlayerStatusOutput = {
+  statusSummaryZh: "【AI_MOCK_MODE】球員近況摘要示範（推論，僅供參考）。",
+  injuryRiskLevel: "UNKNOWN",
+  formScore: null,
+  dataLimitations: ["示範模式"],
+};
+
 const PLAYER_SORT_FIELDS = [
   "overallScore",
   "attackScore",
@@ -58,6 +71,7 @@ export class PlayersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly router: AiRouterService,
+    private readonly config: AppConfigService,
   ) {}
 
   async list(
@@ -188,9 +202,162 @@ export class PlayersService {
       } else {
         failed += 1;
       }
+      if (!report.skipped && !this.config.aiMockMode) {
+        await sleep(this.config.aiGenerationDelayMs);
+      }
     }
 
     return { scope: "players", scanned, generated, skipped, failed };
+  }
+
+  /**
+   * Job: daily form/injury summary for in-tournament players (top N per team
+   * by overallScore — user-tuned cost cap). Material = recent news tagged with
+   * the player's name + the team's recent finished matches; the source hash
+   * skips players whose material hasn't changed since the last run.
+   */
+  async generateStatuses(): Promise<GenerationResult> {
+    const { topN, newsDays } = this.config.playerStatus;
+    const since = new Date();
+    since.setDate(since.getDate() - newsDays);
+
+    const teams = await this.prisma.team.findMany({
+      where: { isEliminated: false },
+      select: {
+        id: true,
+        nameEn: true,
+        nameZh: true,
+        players: {
+          orderBy: [{ overallScore: "desc" }, { id: "asc" }],
+          take: topN,
+          select: {
+            id: true,
+            nameEn: true,
+            nameZh: true,
+            position: true,
+            clubName: true,
+          },
+        },
+      },
+    });
+
+    let scanned = 0;
+    let generated = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    outer: for (const team of teams) {
+      const recentMatches = await this.prisma.match.findMany({
+        where: {
+          status: "FINISHED",
+          OR: [{ homeTeamId: team.id }, { awayTeamId: team.id }],
+        },
+        orderBy: { kickoffAt: "desc" },
+        take: 5,
+        select: {
+          kickoffAt: true,
+          homeScore: true,
+          awayScore: true,
+          winnerTeamId: true,
+          homeTeam: { select: { id: true, nameEn: true } },
+          awayTeam: { select: { id: true, nameEn: true } },
+        },
+      });
+      const matchContext = recentMatches.map((m) => ({
+        kickoffAt: m.kickoffAt?.toISOString() ?? null,
+        home: m.homeTeam.nameEn,
+        away: m.awayTeam.nameEn,
+        score: `${m.homeScore ?? "-"}:${m.awayScore ?? "-"}`,
+        teamWon: m.winnerTeamId === team.id,
+      }));
+
+      for (const p of team.players) {
+        if (generated >= MAX_GENERATIONS_PER_RUN) break outer;
+        scanned += 1;
+
+        const names = [p.nameEn, p.nameZh].filter(
+          (n): n is string => !!n && n.length > 0,
+        );
+        const recentNews = await this.prisma.newsArticle.findMany({
+          where: {
+            publishedAt: { gte: since },
+            tags: { some: { newsTag: { name: { in: names } } } },
+          },
+          orderBy: { publishedAt: "desc" },
+          take: 5,
+          select: {
+            titleEn: true,
+            summaryZh: true,
+            category: true,
+            publishedAt: true,
+          },
+        });
+
+        const report = await this.router.runReportIfChanged<PlayerStatusOutput>(
+          {
+            taskType: "PLAYER_STATUS_SUMMARY",
+            entityId: p.id,
+            reportType: "PLAYER_STATUS_SUMMARY",
+            instruction:
+              "請根據近期相關新聞與該隊近況比賽結果，輸出球員近況與身體狀況摘要。務必謹慎：" +
+              "傷病與狀態判斷屬「推論」，需在文字中明確標示，不可斷言未經證實的傷情；" +
+              "引用新聞時附上發布時間；資料不足時列入 dataLimitations 並將 injuryRiskLevel 設為 UNKNOWN。" +
+              '只輸出 JSON，欄位：{ "statusSummaryZh": string, "injuryRiskLevel": "LOW"|"MEDIUM"|"HIGH"|"UNKNOWN", ' +
+              '"formScore": number|null, "dataLimitations": string[] }。',
+            context: {
+              player: {
+                name: p.nameEn,
+                nameZh: p.nameZh,
+                position: p.position,
+                club: p.clubName,
+              },
+              team: { name: team.nameEn, nameZh: team.nameZh },
+              recentNews: recentNews.map((n) => ({
+                title: n.titleEn,
+                summaryZh: n.summaryZh,
+                category: n.category,
+                publishedAt: n.publishedAt?.toISOString() ?? null,
+              })),
+              recentMatches: matchContext,
+            },
+            scope: `球員：${p.nameEn}`,
+            schema: PlayerStatusOutputSchema,
+            mockData: PLAYER_STATUS_MOCK,
+          },
+        );
+
+        if (report.skipped) {
+          skipped += 1;
+          continue;
+        }
+        if (report.ok && report.data) {
+          if (report.provider && report.provider !== AiProvider.PROGRAM_RULE) {
+            await this.applyStatus(p.id, report.data);
+          }
+          generated += 1;
+        } else {
+          failed += 1;
+        }
+        if (!this.config.aiMockMode) {
+          await sleep(this.config.aiGenerationDelayMs);
+        }
+      }
+    }
+
+    return { scope: "player-status", scanned, generated, skipped, failed };
+  }
+
+  private async applyStatus(
+    playerId: string,
+    d: PlayerStatusOutput,
+  ): Promise<void> {
+    await this.prisma.player.update({
+      where: { id: playerId },
+      data: {
+        injuryRiskLevel: d.injuryRiskLevel as RiskLevel,
+        ...(d.formScore !== null ? { formScore: d.formScore } : {}),
+      },
+    });
   }
 
   private async applyHexagon(

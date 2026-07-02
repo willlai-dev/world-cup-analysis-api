@@ -287,6 +287,36 @@ describe("AI World Cup Analyst API (e2e)", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Phase 3 generation jobs + news impact read endpoint
+  // ---------------------------------------------------------------------------
+
+  it("24. Cron: generate-news-impact / generate-player-status -> DONE (mock)", async () => {
+    const impact = await request(http)
+      .post("/api/jobs/generate-news-impact")
+      .set("x-cron-secret", CRON_SECRET);
+    expect(impact.status).toBe(200);
+    expect(impact.body.data.status).toBe("DONE");
+
+    const status = await request(http)
+      .post("/api/jobs/generate-player-status")
+      .set("x-cron-secret", CRON_SECRET);
+    expect(status.status).toBe(200);
+    expect(status.body.data.status).toBe("DONE");
+    expect(status.body.data.metadata.scope).toBe("player-status");
+  }, 30000);
+
+  it("25. GET /api/news/:id/analysis -> 200 (NEWS_IMPACT report or null)", async () => {
+    const res = await request(http)
+      .get(`/api/news/${SEED_NEWS_ID}/analysis`)
+      .set("Cookie", userCookie);
+    expect(res.status).toBe(200);
+    expect(res.body.error).toBeNull();
+    if (res.body.data) {
+      expect(res.body.data.reportType).toBe("NEWS_IMPACT");
+    }
+  });
+
+  // ---------------------------------------------------------------------------
   // AI quota (Phase 3) — dedicated fresh users so counts start at zero
   // ---------------------------------------------------------------------------
 

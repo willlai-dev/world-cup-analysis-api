@@ -81,8 +81,12 @@ export class JobsService {
         return this.newsSync.run();
       case JobType.GENERATE_NEWS_SUMMARY:
         return this.news.generateSummaries();
+      case JobType.GENERATE_NEWS_IMPACT:
+        return this.news.generateImpacts();
       case JobType.GENERATE_PLAYER_RATINGS:
         return this.players.generateRatings();
+      case JobType.GENERATE_PLAYER_STATUS:
+        return this.players.generateStatuses();
       case JobType.GENERATE_MATCH_ANALYSIS:
         return this.matches.generateAnalyses();
       case JobType.GENERATE_CHAMPION_PREDICTIONS:

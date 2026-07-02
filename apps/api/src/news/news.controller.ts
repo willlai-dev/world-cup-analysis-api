@@ -3,7 +3,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { buildPaginationMeta, Paginated } from '../common/dto/api-response.types';
 import { ChatQuestionDto } from '../common/dto/chat.dto';
-import type { ChatAnswerDto, NewsSummary } from '../common/dto/contracts';
+import type { AiReportDto, ChatAnswerDto, NewsSummary } from '../common/dto/contracts';
 import { NonAdminUserGuard } from '../common/guards/non-admin-user.guard';
 import { PremiumOnlyGuard } from '../common/guards/premium-only.guard';
 import type { AuthenticatedUser } from '../common/types/authenticated-user';
@@ -27,6 +27,11 @@ export class NewsController {
   @Get(':newsId')
   getOne(@Param('newsId') newsId: string): Promise<NewsDetailDto> {
     return this.news.getById(newsId);
+  }
+
+  @Get(':newsId/analysis')
+  getAnalysis(@Param('newsId') newsId: string): Promise<AiReportDto | null> {
+    return this.news.getAnalysis(newsId);
   }
 
   @Post(':newsId/translate')

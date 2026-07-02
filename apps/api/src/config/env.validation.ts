@@ -87,6 +87,16 @@ export const envSchema = z.object({
     .int()
     .positive()
     .default(3),
+
+  // Phase 3 generation jobs
+  /** Delay between AI calls inside generation loops (NVIDIA 503 mitigation); skipped in mock mode. */
+  AI_GENERATION_DELAY_MS: z.coerce.number().int().min(0).default(500),
+  /** Players per team covered by the daily status job (top N by overallScore). */
+  PLAYER_STATUS_TOP_N: z.coerce.number().int().positive().default(15),
+  /** How many days of news feed a player's status context. */
+  PLAYER_STATUS_NEWS_DAYS: z.coerce.number().int().positive().default(7),
+  /** How far back news-impact generation looks for candidate articles. */
+  NEWS_IMPACT_LOOKBACK_DAYS: z.coerce.number().int().positive().default(7),
 });
 
 export type Env = z.infer<typeof envSchema>;

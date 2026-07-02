@@ -15,8 +15,18 @@ import {
   type NewsClassificationOutput,
   NewsClassificationOutputSchema,
 } from "../ai/schemas/news-classification.schema";
-import type { ChatAnswerDto, NewsSummary } from "../common/dto/contracts";
-import { toNewsSummary } from "../mappers";
+import {
+  type NewsImpactOutput,
+  NewsImpactOutputSchema,
+} from "../ai/schemas/news-impact.schema";
+import type {
+  AiReportDto,
+  ChatAnswerDto,
+  NewsSummary,
+} from "../common/dto/contracts";
+import { sleep } from "../common/utils/sleep.util";
+import { AppConfigService } from "../config/app-config.service";
+import { toAiReportDto, toNewsSummary } from "../mappers";
 import { PrismaService } from "../prisma/prisma.service";
 import type { ListNewsQueryDto } from "./dto/list-news-query.dto";
 
@@ -26,6 +36,14 @@ const NEWS_MOCK: NewsClassificationOutput = {
   tags: [],
   relatedTeamNames: [],
   relatedPlayerNames: [],
+  confidenceScore: 50,
+  dataLimitations: ["示範模式"],
+};
+
+const NEWS_IMPACT_MOCK: NewsImpactOutput = {
+  impactSummaryZh: "【AI_MOCK_MODE】新聞影響分析示範（推論，僅供參考）。",
+  affectedTeams: [],
+  affectedPlayers: [],
   confidenceScore: 50,
   dataLimitations: ["示範模式"],
 };
@@ -46,6 +64,7 @@ export class NewsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly router: AiRouterService,
+    private readonly config: AppConfigService,
   ) {}
 
   async list(
@@ -212,6 +231,7 @@ export class NewsService {
         });
         failed += 1;
       }
+      await this.throttle();
     }
 
     return {
@@ -221,6 +241,158 @@ export class NewsService {
       skipped: 0,
       failed,
     };
+  }
+
+  /**
+   * Job: cautious, inference-flagged impact analysis for recent articles that
+   * carry TEAM/PLAYER tags. Persists an AiReport (NEWS / NEWS_IMPACT) per
+   * article; `runReportIfChanged` skips articles whose material is unchanged.
+   */
+  async generateImpacts(): Promise<GenerationResult> {
+    const since = new Date();
+    since.setDate(since.getDate() - this.config.newsImpactLookbackDays);
+    const articles = await this.prisma.newsArticle.findMany({
+      where: {
+        aiSummaryStatus: AiReportStatus.DONE,
+        publishedAt: { gte: since },
+        tags: {
+          some: {
+            newsTag: { type: { in: [NewsTagType.TEAM, NewsTagType.PLAYER] } },
+          },
+        },
+      },
+      take: MAX_GENERATIONS_PER_RUN,
+      orderBy: { publishedAt: "desc" },
+      include: withTags,
+    });
+
+    let generated = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    for (const article of articles) {
+      const tagNames = (type: NewsTagType) =>
+        article.tags
+          .filter((t) => t.newsTag.type === type)
+          .map((t) => t.newsTag.name);
+      const teamNames = tagNames(NewsTagType.TEAM);
+      const playerNames = tagNames(NewsTagType.PLAYER);
+
+      const [teams, players] = await Promise.all([
+        teamNames.length
+          ? this.prisma.team.findMany({
+              where: {
+                OR: [
+                  { nameEn: { in: teamNames } },
+                  { nameZh: { in: teamNames } },
+                ],
+              },
+              select: {
+                nameEn: true,
+                nameZh: true,
+                isEliminated: true,
+                worldRanking: true,
+                ratingTier: true,
+              },
+              take: 5,
+            })
+          : Promise.resolve([]),
+        playerNames.length
+          ? this.prisma.player.findMany({
+              where: {
+                OR: [
+                  { nameEn: { in: playerNames } },
+                  { nameZh: { in: playerNames } },
+                ],
+              },
+              select: {
+                nameEn: true,
+                nameZh: true,
+                position: true,
+                injuryRiskLevel: true,
+                formScore: true,
+                team: { select: { nameEn: true, nameZh: true } },
+              },
+              take: 8,
+            })
+          : Promise.resolve([]),
+      ]);
+
+      const report = await this.router.runReportIfChanged<NewsImpactOutput>({
+        taskType: "NEWS_IMPACT",
+        entityId: article.id,
+        reportType: "NEWS_IMPACT",
+        instruction:
+          "請根據這則新聞與資料庫中相關球隊/球員的現況，分析其可能影響。務必使用謹慎語氣：" +
+          "所有影響判斷皆屬「推論」，需在文字中明確標示，不可斷言未經證實的事實；" +
+          "資料不足時列入 dataLimitations。只輸出 JSON，欄位：" +
+          '{ "impactSummaryZh": string, "affectedTeams": [{ "name": string, "impact": string, ' +
+          '"direction": "POSITIVE"|"NEGATIVE"|"NEUTRAL"|"UNKNOWN" }], "affectedPlayers": [同 affectedTeams], ' +
+          '"confidenceScore": number, "dataLimitations": string[] }。',
+        context: {
+          title: article.titleEn,
+          summaryZh: article.summaryZh,
+          summaryEn: article.summaryEn,
+          category: article.category,
+          publishedAt: article.publishedAt?.toISOString() ?? null,
+          taggedTeams: teams,
+          taggedPlayers: players,
+        },
+        scope: `新聞：${article.titleEn}`,
+        schema: NewsImpactOutputSchema,
+        mockData: NEWS_IMPACT_MOCK,
+      });
+
+      if (report.skipped) {
+        skipped += 1;
+        continue;
+      }
+      if (report.ok) {
+        generated += 1;
+      } else {
+        failed += 1;
+      }
+      await this.throttle();
+    }
+
+    return {
+      scope: "news-impact",
+      scanned: articles.length,
+      generated,
+      skipped,
+      failed,
+    };
+  }
+
+  /** Latest DONE NEWS_IMPACT report for an article (null when none yet). */
+  async getAnalysis(newsId: string): Promise<AiReportDto | null> {
+    const news = await this.prisma.newsArticle.findUnique({
+      where: { id: newsId },
+      select: { id: true },
+    });
+    if (!news) {
+      throw new NotFoundException({
+        code: "NOT_FOUND",
+        message: "News article not found",
+      });
+    }
+    const report = await this.prisma.aiReport.findFirst({
+      where: {
+        entityType: "NEWS",
+        entityId: newsId,
+        reportType: "NEWS_IMPACT",
+        status: AiReportStatus.DONE,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    return report ? toAiReportDto(report) : null;
+  }
+
+  /** Small inter-call delay in real mode only (NVIDIA 503 mitigation). */
+  private throttle(): Promise<void> {
+    return this.config.aiMockMode
+      ? Promise.resolve()
+      : sleep(this.config.aiGenerationDelayMs);
   }
 
   private async applyClassification(
@@ -235,10 +407,28 @@ export class NewsService {
         aiSummaryStatus: AiReportStatus.DONE,
       },
     });
-    for (const tag of data.tags) {
+    // Merge the classifier's relatedTeamNames/relatedPlayerNames into the tag
+    // set — they anchor news-impact / player-status lookups by entity name.
+    const tags = [
+      ...data.tags.map((t) => ({ name: t.name, type: t.type as NewsTagType })),
+      ...data.relatedTeamNames.map((name) => ({
+        name,
+        type: NewsTagType.TEAM,
+      })),
+      ...data.relatedPlayerNames.map((name) => ({
+        name,
+        type: NewsTagType.PLAYER,
+      })),
+    ].filter(
+      (tag, index, all) =>
+        tag.name.trim().length > 0 &&
+        all.findIndex((t) => t.name === tag.name && t.type === tag.type) ===
+          index,
+    );
+    for (const tag of tags) {
       const newsTag = await this.prisma.newsTag.upsert({
-        where: { name_type: { name: tag.name, type: tag.type as NewsTagType } },
-        create: { name: tag.name, type: tag.type as NewsTagType },
+        where: { name_type: { name: tag.name, type: tag.type } },
+        create: { name: tag.name, type: tag.type },
         update: {},
       });
       await this.prisma.newsArticleTag.createMany({

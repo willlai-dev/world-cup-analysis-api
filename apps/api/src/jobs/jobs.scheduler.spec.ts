@@ -16,6 +16,7 @@ describe('JobsScheduler', () => {
       'SYNC_RESULTS',
       'FETCH_NEWS',
       'GENERATE_NEWS_SUMMARY',
+      'GENERATE_NEWS_IMPACT',
       'GENERATE_PLAYER_RATINGS',
       'GENERATE_MATCH_ANALYSIS',
       'GENERATE_CHAMPION_PREDICTIONS',
@@ -34,11 +35,21 @@ describe('JobsScheduler', () => {
       'SYNC_RESULTS',
       'FETCH_NEWS',
       'GENERATE_NEWS_SUMMARY',
+      'GENERATE_NEWS_IMPACT',
       'GENERATE_MATCH_ANALYSIS',
       'GENERATE_CHAMPION_PREDICTIONS',
     ]);
     expect(order).not.toContain('SYNC_PLAYERS');
     expect(order).not.toContain('GENERATE_PLAYER_RATINGS');
+  });
+
+  it('06:00 slot runs only the player-status job (staggered from the main pipeline)', async () => {
+    const run = jest.fn().mockResolvedValue({ status: 'DONE' });
+    const scheduler = new JobsScheduler({ run } as unknown as JobsService);
+
+    await scheduler.runPlayerStatus();
+
+    expect(run.mock.calls.map((c) => c[0])).toEqual(['GENERATE_PLAYER_STATUS']);
   });
 
   it('continues the pipeline even if one job throws', async () => {
@@ -51,7 +62,7 @@ describe('JobsScheduler', () => {
 
     await scheduler.runFullPipeline();
 
-    expect(run).toHaveBeenCalledTimes(9);
+    expect(run).toHaveBeenCalledTimes(10);
   });
 
   it('skips a tick when a previous run is still in progress', async () => {

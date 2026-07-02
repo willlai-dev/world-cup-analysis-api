@@ -69,6 +69,18 @@ export class AppConfigService {
   get aiMockMode(): boolean {
     return this.get("AI_MOCK_MODE");
   }
+  get aiGenerationDelayMs(): number {
+    return this.get("AI_GENERATION_DELAY_MS");
+  }
+  get playerStatus() {
+    return {
+      topN: this.get("PLAYER_STATUS_TOP_N"),
+      newsDays: this.get("PLAYER_STATUS_NEWS_DAYS"),
+    };
+  }
+  get newsImpactLookbackDays(): number {
+    return this.get("NEWS_IMPACT_LOOKBACK_DAYS");
+  }
   get aiQuota() {
     return {
       generalChatUserPerDay: this.get("AI_QUOTA_GENERAL_CHAT_USER_PER_DAY"),

@@ -56,6 +56,31 @@ describe('ChampionPredictionService.generateSystemRun', () => {
     expect(createArg.data.triggeredByUserId).toBeNull();
     expect(result).toMatchObject({ scope: 'champion', runId: 'run1', status: 'DONE', entries: 1 });
   });
+
+  it('only evaluates non-eliminated teams, scored ones first (NULLS LAST)', async () => {
+    const { service, prisma } = build();
+    prisma.team.findMany.mockResolvedValue([{ id: 't1', championScore: 80, ratingTier: 'S' }]);
+    prisma.championPredictionRun.create.mockResolvedValue({
+      id: 'run1',
+      status: 'DONE',
+      createdAt: new Date(),
+      completedAt: new Date(),
+      nvidiaReportId: null,
+      qwenReportId: null,
+      finalReportId: null,
+      entries: [],
+    });
+
+    await service.generateSystemRun();
+
+    const findArg = prisma.team.findMany.mock.calls[0][0];
+    expect(findArg.where).toEqual({ isEliminated: false });
+    expect(findArg.orderBy).toEqual([
+      { championScore: { sort: 'desc', nulls: 'last' } },
+      { id: 'asc' },
+    ]);
+    expect(findArg.take).toBeUndefined(); // all non-eliminated teams, no cap
+  });
 });
 
 describe('ChampionPredictionService divergence (getLatest)', () => {

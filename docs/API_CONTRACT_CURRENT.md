@@ -713,7 +713,10 @@ Behavior notes:
 - `GET /api/champion-predictions` and `GET /api/champion-predictions/latest` currently call the same service method and return the same resource.
 - If no champion-prediction run exists yet, success response is `{ data: null, error: null }`.
 - `POST /api/champion-predictions/recalculate`
-  - Selects the top 8 teams by `championScore DESC` as the run's team set.
+  - Team set = **every non-eliminated team** (`isEliminated = false`), ordered by `championScore DESC
+    NULLS LAST` (so rated teams lead the context; eliminated teams are excluded entirely — a
+    knocked-out team can no longer win). The pool shrinks as the knockouts progress. All three model
+    legs (A/B/final) evaluate this full set in a single call each, so widening it adds no AI calls.
   - Under `AI_MOCK_MODE=true`: deterministic ranking with mock `entries[*].aiComment`; the three reports stay `null`.
   - Under `AI_MOCK_MODE=false`: runs `CHAMPION_PREDICTION_A` (NVIDIA), `_B` (Qwen), and `_FINAL`
     (Qwen → NVIDIA fallback), persists an `AiReport` per leg, and links `nvidiaReport` / `qwenReport` /

@@ -25,8 +25,6 @@ import { AppConfigService } from '../config/app-config.service';
 import { toAiReportDto, toChampionEntrySummary } from '../mappers';
 import { PrismaService } from '../prisma/prisma.service';
 
-const TOP_N = 8;
-
 const MOCK_COMMENT =
   '【AI_MOCK_MODE】重新計算的示範結果，正式版本將以資料庫快照與雙模型分析為準。';
 const DEGRADE_COMMENT = 'AI 分析暫時無法使用，此為依資料庫冠軍分數排序的初步結果。';
@@ -110,9 +108,13 @@ export class ChampionPredictionService {
     triggerType: ChampionPredictionTriggerType,
     userId: string | null,
   ): Promise<ChampionPredictionResponse> {
+    // Only teams still in the tournament can win it. Evaluate every
+    // non-eliminated team (the pool shrinks as the knockouts progress).
+    // NULLS LAST so teams that already have a championScore lead the context
+    // over not-yet-rated ones (Postgres defaults DESC to NULLS FIRST).
     const teams = await this.prisma.team.findMany({
-      orderBy: { championScore: 'desc' },
-      take: TOP_N,
+      where: { isEliminated: false },
+      orderBy: [{ championScore: { sort: 'desc', nulls: 'last' } }, { id: 'asc' }],
     });
 
     if (this.config.aiMockMode) {
@@ -139,7 +141,8 @@ export class ChampionPredictionService {
       userId,
       reportType: 'CHAMPION_ANALYSIS_NVIDIA',
       instruction:
-        '請分析本屆世界盃各參賽國家隊的奪冠競爭格局，在 analysis 中逐隊說明其優勢與風險，並在 entries 給出你的奪冠排名' +
+        '以下清單為目前仍在賽（未淘汰）的國家隊，已出局的隊伍不在其中。請完整評估每一支的奪冠競爭格局，' +
+        '在 analysis 中逐隊說明其優勢與風險，並在 entries 給出你的奪冠排名' +
         '（資料庫缺實力數據時可用公開足球知識並標註推估）。' +
         MODEL_LEG_FORMAT,
       context: { teams: teamContext },
@@ -154,8 +157,8 @@ export class ChampionPredictionService {
       userId,
       reportType: 'CHAMPION_ANALYSIS_QWEN',
       instruction:
-        '請為各國家隊的奪冠可能性排序，在 analysis 中說明排序理由與關鍵變數，並在 entries 給出你的奪冠排名' +
-        '（資料庫缺實力數據時可用公開足球知識並標註推估）。' +
+        '以下清單為目前仍在賽（未淘汰）的國家隊。請為每一支的奪冠可能性排序，在 analysis 中說明排序理由與關鍵變數，' +
+        '並在 entries 給出你的奪冠排名（資料庫缺實力數據時可用公開足球知識並標註推估）。' +
         MODEL_LEG_FORMAT,
       context: { teams: teamContext },
       scope: '冠軍預測',
@@ -169,7 +172,8 @@ export class ChampionPredictionService {
       userId,
       reportType: 'CHAMPION_FINAL',
       instruction:
-        '綜合模型 A 與模型 B 的分析，輸出最終奪冠預測排名。請「只」輸出 JSON 物件，格式為：' +
+        '綜合模型 A 與模型 B 的分析，輸出最終奪冠預測排名。提供的清單皆為仍在賽（未淘汰）的國家隊，' +
+        '請完整涵蓋每一支、不要遺漏。請「只」輸出 JSON 物件，格式為：' +
         '{ "summary": string, "entries": [{ "teamName": string, "rank": number, ' +
         '"probabilityText": string, "strengths": string[], "risks": string[], "aiComment": string }], ' +
         '"dataLimitations": string[] }。teamName 必須是提供清單中的英文名稱（name 欄位）。',

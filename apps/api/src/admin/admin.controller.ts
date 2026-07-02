@@ -14,9 +14,10 @@ import { ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AdminOnlyGuard } from '../common/guards/admin-only.guard';
 import { buildPaginationMeta, Paginated } from '../common/dto/api-response.types';
-import type { UserDto } from '../common/dto/contracts';
+import type { AiUsageStatsDto, UserDto } from '../common/dto/contracts';
 import type { AuthenticatedUser } from '../common/types/authenticated-user';
 import { AdminService } from './admin.service';
+import { AiUsageQueryDto } from './dto/ai-usage-query.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
 import { RegisterAdminDto } from './dto/register-admin.dto';
@@ -60,5 +61,10 @@ export class AdminController {
   @HttpCode(201)
   registerAdmin(@Body() dto: RegisterAdminDto): Promise<UserDto> {
     return this.admin.registerAdmin(dto);
+  }
+
+  @Get('ai-usage')
+  getAiUsage(@Query() query: AiUsageQueryDto): Promise<AiUsageStatsDto> {
+    return this.admin.getAiUsageStats(query);
   }
 }

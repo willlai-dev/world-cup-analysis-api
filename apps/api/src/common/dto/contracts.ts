@@ -162,6 +162,29 @@ export type ChampionPredictionResponse = {
   divergence?: ChampionDivergence;
 };
 
+/** Aggregated AiUsageLog statistics for GET /admin/ai-usage. */
+export type AiUsageStatsDto = {
+  from: string;
+  to: string;
+  totals: {
+    calls: number;
+    done: number;
+    failed: number;
+    inputTokens: number;
+    outputTokens: number;
+  };
+  byTaskType: { taskType: string; calls: number }[];
+  byProvider: { provider: string; calls: number }[];
+  byStatus: { status: string; calls: number }[];
+  byDay: { day: string; calls: number }[];
+  topUsers: {
+    userId: string;
+    email: string | null;
+    displayName: string | null;
+    calls: number;
+  }[];
+};
+
 export type ChatAnswerDto = {
   answer: string;
   provider: 'NVIDIA' | 'QWEN' | 'PROGRAM_RULE';

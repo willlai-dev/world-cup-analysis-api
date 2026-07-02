@@ -318,6 +318,23 @@ describe("AI World Cup Analyst API (e2e)", () => {
     }
   });
 
+  it("26. GET /api/admin/ai-usage: ADMIN -> 200 aggregated stats, USER -> 403", async () => {
+    const res = await request(http)
+      .get("/api/admin/ai-usage")
+      .set("Cookie", adminCookie);
+    expect(res.status).toBe(200);
+    expect(res.body.data.totals.calls).toBeGreaterThanOrEqual(0);
+    expect(Array.isArray(res.body.data.byTaskType)).toBe(true);
+    expect(Array.isArray(res.body.data.byProvider)).toBe(true);
+    expect(Array.isArray(res.body.data.byDay)).toBe(true);
+    expect(Array.isArray(res.body.data.topUsers)).toBe(true);
+
+    const forbidden = await request(http)
+      .get("/api/admin/ai-usage")
+      .set("Cookie", userCookie);
+    expect(forbidden.status).toBe(403);
+  });
+
   // ---------------------------------------------------------------------------
   // AI quota (Phase 3) — dedicated fresh users so counts start at zero
   // ---------------------------------------------------------------------------

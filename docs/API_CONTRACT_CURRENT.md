@@ -504,6 +504,7 @@ Validation and behavior:
 | PATCH  | `/api/admin/users/:userId/role` | 200    | `ADMIN` only | `{ role }`                                                 | `UserDto`                          |
 | DELETE | `/api/admin/users/:userId`      | 200    | `ADMIN` only | none                                                       | `{ success: true, user: UserDto }` |
 | POST   | `/api/admin/register-admin`     | 201    | `ADMIN` only | `{ email, password, displayName }`                         | `UserDto`                          |
+| GET    | `/api/admin/ai-usage`           | 200    | `ADMIN` only | Query: `from?`, `to?` (ISO 8601), `taskType?`              | `AiUsageStatsDto`                  |
 
 Validation and behavior:
 
@@ -523,6 +524,19 @@ Validation and behavior:
   - Deleting an already disabled user is idempotent and still returns success.
   - Self-disable is blocked with `409 CANNOT_DISABLE_SELF`.
   - Disabling the last active admin is blocked with `409 LAST_ADMIN_PROTECTED`.
+- `GET /api/admin/ai-usage` (Phase 3): aggregates `AiUsageLog` over the window (default = last 7 days).
+  Every row is one provider attempt; mock-mode rows have `provider = "PROGRAM_RULE"`, `model = "mock"`.
+  ```ts
+  type AiUsageStatsDto = {
+    from: string; to: string;
+    totals: { calls: number; done: number; failed: number; inputTokens: number; outputTokens: number };
+    byTaskType: { taskType: string; calls: number }[];
+    byProvider: { provider: string; calls: number }[];
+    byStatus: { status: string; calls: number }[];
+    byDay: { day: string; calls: number }[]; // day = ISO midnight UTC buckets (date_trunc)
+    topUsers: { userId: string; email: string | null; displayName: string | null; calls: number }[]; // top 10
+  };
+  ```
 
 ### 5.5 Matches
 

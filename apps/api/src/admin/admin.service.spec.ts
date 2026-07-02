@@ -70,3 +70,83 @@ describe('AdminService soft delete', () => {
     expect(prisma.user.update).not.toHaveBeenCalled();
   });
 });
+
+describe('AdminService.getAiUsageStats', () => {
+  function buildStats() {
+    const prisma = {
+      aiUsageLog: {
+        count: jest
+          .fn()
+          .mockResolvedValueOnce(10) // calls
+          .mockResolvedValueOnce(8) // done
+          .mockResolvedValueOnce(2), // failed
+        aggregate: jest.fn().mockResolvedValue({
+          _sum: { inputTokenEstimate: 1200, outputTokenEstimate: 3400 },
+        }),
+        groupBy: jest.fn().mockImplementation(({ by }: { by: string[] }) => {
+          if (by[0] === 'taskType')
+            return Promise.resolve([{ taskType: 'GENERAL_CHAT', _count: { _all: 7 } }]);
+          if (by[0] === 'provider')
+            return Promise.resolve([{ provider: 'NVIDIA', _count: { _all: 9 } }]);
+          if (by[0] === 'requestStatus')
+            return Promise.resolve([{ requestStatus: 'DONE', _count: { _all: 8 } }]);
+          return Promise.resolve([{ userId: 'u1', _count: { _all: 6 } }]);
+        }),
+      },
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValue([{ day: new Date('2026-07-01T00:00:00Z'), calls: 10n }]),
+      user: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ id: 'u1', email: 'a@b.c', displayName: 'A' }]),
+      },
+    };
+    const service = new AdminService(prisma as unknown as PrismaService);
+    return { service, prisma };
+  }
+
+  it('aggregates totals / groupings / byDay / topUsers over the window', async () => {
+    const { service, prisma } = buildStats();
+
+    const stats = await service.getAiUsageStats({
+      from: '2026-06-25T00:00:00.000Z',
+      to: '2026-07-02T00:00:00.000Z',
+      taskType: 'GENERAL_CHAT',
+    });
+
+    expect(stats.totals).toEqual({
+      calls: 10,
+      done: 8,
+      failed: 2,
+      inputTokens: 1200,
+      outputTokens: 3400,
+    });
+    expect(stats.byTaskType).toEqual([{ taskType: 'GENERAL_CHAT', calls: 7 }]);
+    expect(stats.byProvider).toEqual([{ provider: 'NVIDIA', calls: 9 }]);
+    expect(stats.byStatus).toEqual([{ status: 'DONE', calls: 8 }]);
+    expect(stats.byDay).toEqual([{ day: '2026-07-01T00:00:00.000Z', calls: 10 }]);
+    expect(stats.topUsers).toEqual([
+      { userId: 'u1', email: 'a@b.c', displayName: 'A', calls: 6 },
+    ]);
+
+    // taskType filter propagates to every count/groupBy where-clause
+    const where = prisma.aiUsageLog.count.mock.calls[0][0].where;
+    expect(where.taskType).toBe('GENERAL_CHAT');
+    expect(where.createdAt.gte.toISOString()).toBe('2026-06-25T00:00:00.000Z');
+  });
+
+  it('defaults the window to the last 7 days', async () => {
+    const { service, prisma } = buildStats();
+
+    const stats = await service.getAiUsageStats({});
+
+    const where = prisma.aiUsageLog.count.mock.calls[0][0].where;
+    const spanMs =
+      where.createdAt.lte.getTime() - where.createdAt.gte.getTime();
+    expect(spanMs).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(new Date(stats.to).getTime()).toBeGreaterThan(
+      new Date(stats.from).getTime(),
+    );
+  });
+});

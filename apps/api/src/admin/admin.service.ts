@@ -3,11 +3,12 @@ import {
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
-import { type Prisma, UserRole, UserStatus } from "@prisma/client";
+import { AiReportStatus, Prisma, UserRole, UserStatus } from "@prisma/client";
 import * as bcrypt from "bcryptjs";
-import type { UserDto } from "../common/dto/contracts";
+import type { AiUsageStatsDto, UserDto } from "../common/dto/contracts";
 import { toUserDto } from "../mappers";
 import { PrismaService } from "../prisma/prisma.service";
+import type { AiUsageQueryDto } from "./dto/ai-usage-query.dto";
 import type { CreateUserDto } from "./dto/create-user.dto";
 import type { ListUsersQueryDto } from "./dto/list-users-query.dto";
 import type { RegisterAdminDto } from "./dto/register-admin.dto";
@@ -79,6 +80,120 @@ export class AdminService {
       data: { role },
     });
     return toUserDto(updated);
+  }
+
+  /**
+   * Aggregated AI usage statistics over AiUsageLog (Phase 3). Window defaults
+   * to the last 7 days; every row is one provider attempt (mock rows are
+   * provider=PROGRAM_RULE / model="mock").
+   */
+  async getAiUsageStats(query: AiUsageQueryDto): Promise<AiUsageStatsDto> {
+    const to = query.to ? new Date(query.to) : new Date();
+    const from = query.from
+      ? new Date(query.from)
+      : new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const where: Prisma.AiUsageLogWhereInput = {
+      createdAt: { gte: from, lte: to },
+      ...(query.taskType ? { taskType: query.taskType } : {}),
+    };
+
+    const [calls, done, failed, tokens, byTaskType, byProvider, byStatus, byUser] =
+      await Promise.all([
+        this.prisma.aiUsageLog.count({ where }),
+        this.prisma.aiUsageLog.count({
+          where: { ...where, requestStatus: AiReportStatus.DONE },
+        }),
+        this.prisma.aiUsageLog.count({
+          where: { ...where, requestStatus: AiReportStatus.FAILED },
+        }),
+        this.prisma.aiUsageLog.aggregate({
+          where,
+          _sum: { inputTokenEstimate: true, outputTokenEstimate: true },
+        }),
+        this.prisma.aiUsageLog.groupBy({
+          by: ["taskType"],
+          where,
+          _count: { _all: true },
+          orderBy: { _count: { taskType: "desc" } },
+        }),
+        this.prisma.aiUsageLog.groupBy({
+          by: ["provider"],
+          where,
+          _count: { _all: true },
+          orderBy: { _count: { provider: "desc" } },
+        }),
+        this.prisma.aiUsageLog.groupBy({
+          by: ["requestStatus"],
+          where,
+          _count: { _all: true },
+          orderBy: { _count: { requestStatus: "desc" } },
+        }),
+        this.prisma.aiUsageLog.groupBy({
+          by: ["userId"],
+          where: { ...where, userId: { not: null } },
+          _count: { _all: true },
+          orderBy: { _count: { userId: "desc" } },
+          take: 10,
+        }),
+      ]);
+
+    const byDayRows = await this.prisma.$queryRaw<
+      { day: Date; calls: bigint }[]
+    >`
+      SELECT date_trunc('day', "createdAt") AS day, COUNT(*)::bigint AS calls
+      FROM "AiUsageLog"
+      WHERE "createdAt" >= ${from} AND "createdAt" <= ${to}
+      ${query.taskType ? Prisma.sql`AND "taskType" = ${query.taskType}` : Prisma.empty}
+      GROUP BY 1
+      ORDER BY 1
+    `;
+
+    const userIds = byUser
+      .map((u) => u.userId)
+      .filter((id): id is string => id !== null);
+    const users = userIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, email: true, displayName: true },
+        })
+      : [];
+    const userById = new Map(users.map((u) => [u.id, u]));
+
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      totals: {
+        calls,
+        done,
+        failed,
+        inputTokens: tokens._sum.inputTokenEstimate ?? 0,
+        outputTokens: tokens._sum.outputTokenEstimate ?? 0,
+      },
+      byTaskType: byTaskType.map((r) => ({
+        taskType: r.taskType,
+        calls: r._count._all,
+      })),
+      byProvider: byProvider.map((r) => ({
+        provider: r.provider,
+        calls: r._count._all,
+      })),
+      byStatus: byStatus.map((r) => ({
+        status: r.requestStatus,
+        calls: r._count._all,
+      })),
+      byDay: byDayRows.map((r) => ({
+        day: r.day.toISOString(),
+        calls: Number(r.calls),
+      })),
+      topUsers: byUser
+        .filter((r): r is typeof r & { userId: string } => r.userId !== null)
+        .map((r) => ({
+          userId: r.userId,
+          email: userById.get(r.userId)?.email ?? null,
+          displayName: userById.get(r.userId)?.displayName ?? null,
+          calls: r._count._all,
+        })),
+    };
   }
 
   /**

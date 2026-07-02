@@ -318,6 +318,15 @@ describe("AI World Cup Analyst API (e2e)", () => {
     }
   });
 
+  it("27. Cron: generate-team-ratings -> DONE (mock)", async () => {
+    const res = await request(http)
+      .post("/api/jobs/generate-team-ratings")
+      .set("x-cron-secret", CRON_SECRET);
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe("DONE");
+    expect(res.body.data.metadata.scope).toBe("teams");
+  }, 30000);
+
   it("26. GET /api/admin/ai-usage: ADMIN -> 200 aggregated stats, USER -> 403", async () => {
     const res = await request(http)
       .get("/api/admin/ai-usage")

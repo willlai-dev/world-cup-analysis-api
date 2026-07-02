@@ -33,6 +33,13 @@ const REFRESH_PIPELINE: JobType[] = [
 ];
 
 /**
+ * 02:00 team ratings pass — runs BEFORE the 04:00 pipeline so champion
+ * prediction (which ranks by championScore) sees fresh team scores. Kept on
+ * its own slot to avoid piling onto NVIDIA during the main generate stage.
+ */
+const TEAM_RATINGS_PIPELINE: JobType[] = [JobType.GENERATE_TEAM_RATINGS];
+
+/**
  * 06:00 player status/injury pass — deliberately staggered 2h after the 04:00
  * full pipeline so (a) the day's news is already fetched+tagged and (b) it
  * doesn't pile onto NVIDIA while the main pipeline is generating (503s).
@@ -51,6 +58,11 @@ export class JobsScheduler {
   private running = false;
 
   constructor(private readonly jobs: JobsService) {}
+
+  @Cron('0 2 * * *')
+  runTeamRatings(): Promise<void> {
+    return this.runPipeline('team-ratings', TEAM_RATINGS_PIPELINE);
+  }
 
   @Cron(CronExpression.EVERY_DAY_AT_4AM)
   runFullPipeline(): Promise<void> {

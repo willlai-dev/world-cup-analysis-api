@@ -62,6 +62,12 @@ export class JobsController {
     return this.jobs.run(JobType.GENERATE_MATCH_ANALYSIS);
   }
 
+  @Post('generate-team-ratings')
+  @HttpCode(200)
+  generateTeamRatings(): Promise<JobResult> {
+    return this.jobs.run(JobType.GENERATE_TEAM_RATINGS);
+  }
+
   @Post('generate-player-ratings')
   @HttpCode(200)
   generatePlayerRatings(): Promise<JobResult> {

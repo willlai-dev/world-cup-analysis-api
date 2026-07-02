@@ -803,6 +803,7 @@ All `/api/jobs/*` routes are `@Public()` but protected by `CronSecretGuard`.
 - **Real (AI generation, via AiRouter):** `generate-news-summary` (摘要/分類/標籤 → `NewsArticle` + tags,
   另把 `relatedTeamNames`/`relatedPlayerNames` 併入 TEAM/PLAYER 標籤),
   `generate-news-impact` (Phase 3：對近 7 天已摘要且帶 TEAM/PLAYER 標籤的新聞產生謹慎語氣影響分析 → `AiReport(NEWS/NEWS_IMPACT)`),
+  `generate-team-ratings` (對**全部**球隊產生隊伍實力評分 `championScore/attackScore/midfieldScore/defenseScore/statusScore/formScore` + `ratingTier` → 寫回 `Team` + 存 `AiReport(TEAM/TEAM_SQUAD_ANALYSIS)`；以球員名單評分 + 近期賽果為據，真實模式用公開知識補足；先前僅 6 支種子隊有分數，此 job 補齊其餘 42 支),
   `generate-player-ratings` (六邊形評分 → `AiReport`，真實模式另寫回 `Player` 分數),
   `generate-player-status` (Phase 3：對在賽隊伍每隊前 `PLAYER_STATUS_TOP_N`(15) 名球員,依近 7 天標籤新聞 + 該隊近 5 場結果產生近況/傷病摘要 → `AiReport(PLAYER/PLAYER_STATUS_SUMMARY)`，真實模式寫回 `injuryRiskLevel`/`formScore`),
   `generate-match-analysis` (賽前分析 → `AiReport`，供 `/analysis` 與 `/prediction`；**僅產生未開賽 `SCHEDULED` 的比賽**，含三種最可能比分),
@@ -820,6 +821,7 @@ Current implemented routes:
 - `POST /api/jobs/fetch-news`
 - `POST /api/jobs/generate-news-summary`
 - `POST /api/jobs/generate-news-impact`
+- `POST /api/jobs/generate-team-ratings`
 - `POST /api/jobs/generate-match-analysis`
 - `POST /api/jobs/generate-player-ratings`
 - `POST /api/jobs/generate-player-status`
@@ -851,10 +853,12 @@ Failure note:
 - Data-fetch jobs are implemented: `sync-teams` / `sync-players` / `sync-fixtures` / `sync-results`
   (football-data.org) and `fetch-news` (Guardian + NewsAPI), each with a no-key skip.
 - AI-generation jobs are implemented: `generate-news-summary` / `generate-news-impact` /
-  `generate-player-ratings` / `generate-player-status` / `generate-match-analysis` /
-  `generate-champion-predictions` (via AiRouter; skip-if-unchanged via `sourceSnapshotHash`;
-  bounded at 200/run; `PROGRAM_RULE` reports under `AI_MOCK_MODE`; real-mode inter-call throttle).
-- Scheduler is implemented (`@nestjs/schedule`, `jobs/jobs.scheduler.ts`): **04:00 full pipeline**
+  `generate-team-ratings` / `generate-player-ratings` / `generate-player-status` /
+  `generate-match-analysis` / `generate-champion-predictions` (via AiRouter; skip-if-unchanged via
+  `sourceSnapshotHash`; bounded at 200/run; `PROGRAM_RULE` reports under `AI_MOCK_MODE`; real-mode
+  inter-call throttle).
+- Scheduler is implemented (`@nestjs/schedule`, `jobs/jobs.scheduler.ts`): **02:00 team-ratings pass**
+  (before the main pipeline so champion prediction ranks on fresh team scores), **04:00 full pipeline**
   (all sync + all generate, incl. news impact), **06:00 player-status pass** (staggered so the day's
   news is tagged first and NVIDIA isn't hammered concurrently), and **12:00 midday refresh**
   (fixtures/results/news + news-impact/match/champion generation, no team/player sync or player

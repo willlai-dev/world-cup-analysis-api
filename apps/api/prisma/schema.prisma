@@ -158,6 +158,7 @@ enum JobType {
   GENERATE_CHAMPION_PREDICTIONS
   GENERATE_NEWS_IMPACT
   GENERATE_PLAYER_STATUS
+  GENERATE_TEAM_RATINGS
 }
 
 // ---------------------------------------------------------------------------

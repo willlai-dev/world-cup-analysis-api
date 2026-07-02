@@ -9,6 +9,7 @@ import { MatchSyncService } from '../sources/football-data/match-sync.service';
 import { PlayerSyncService } from '../sources/football-data/player-sync.service';
 import { TeamSyncService } from '../sources/football-data/team-sync.service';
 import { NewsSyncService } from '../sources/news/news-sync.service';
+import { TeamsService } from '../teams/teams.service';
 
 export type JobResult = {
   jobRunId: string;
@@ -32,6 +33,7 @@ export class JobsService {
     private readonly players: PlayersService,
     private readonly matches: MatchesService,
     private readonly champion: ChampionPredictionService,
+    private readonly teams: TeamsService,
   ) {}
 
   /**
@@ -83,6 +85,8 @@ export class JobsService {
         return this.news.generateSummaries();
       case JobType.GENERATE_NEWS_IMPACT:
         return this.news.generateImpacts();
+      case JobType.GENERATE_TEAM_RATINGS:
+        return this.teams.generateRatings();
       case JobType.GENERATE_PLAYER_RATINGS:
         return this.players.generateRatings();
       case JobType.GENERATE_PLAYER_STATUS:

@@ -18,6 +18,6 @@ export class AiController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: ChatQuestionDto,
   ): Promise<ChatAnswerDto> {
-    return this.ai.generalChat(user.id, dto.question);
+    return this.ai.generalChat(user.id, dto.question, dto.history);
   }
 }

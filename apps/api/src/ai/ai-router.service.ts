@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { type AiEntityType, AiProvider, type AiReportStatus, Prisma } from '@prisma/client';
 import type { ZodType, ZodTypeDef } from 'zod';
-import type { ChatAnswerDto } from '../common/dto/contracts';
+import type { ChatAnswerDto, ChatTurn } from '../common/dto/contracts';
 import { buildMockChatAnswer } from '../common/utils/ai-mock.util';
 import { AppConfigService } from '../config/app-config.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -34,6 +34,8 @@ export type ChatInput = {
   scope?: string | null;
   sourceUpdatedAt?: string | null;
   context?: unknown;
+  /** Prior conversation turns (general chat multi-turn); oldest→newest. */
+  history?: ChatTurn[] | null;
 };
 
 export type TranslationResult = {
@@ -119,6 +121,7 @@ export class AiRouterService {
       scope: input.scope,
       context: input.context,
       userPrompt: input.question,
+      history: input.history,
     });
     const result = await this.callWithRouting({
       taskType: input.taskType,

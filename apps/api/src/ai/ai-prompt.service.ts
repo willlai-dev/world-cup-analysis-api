@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { AiEntityType } from '@prisma/client';
+import type { ChatTurn } from '../common/dto/contracts';
 import { type AiChatMessage, type AiTaskType, TASK_ENTITY_TYPE } from './ai-task.types';
 
 /**
@@ -45,27 +46,35 @@ export type PromptInput = {
   userPrompt: string;
   /** Use RELAXED_SKILL (allow public football knowledge) for generation tasks. */
   allowModelKnowledge?: boolean;
+  /** Prior conversation turns (general chat multi-turn); oldest→newest. */
+  history?: ChatTurn[] | null;
 };
 
 @Injectable()
 export class AiPromptService {
-  /** Builds [system, user] messages: global/relaxed skill + page skill + snapshot, then the prompt. */
+  /**
+   * Builds the message list: global/relaxed skill + page skill + snapshot as the
+   * system message, then (optional) prior turns, then the user prompt. When
+   * history is present the current prompt is flagged 【本次提問】 so the model
+   * answers it while treating earlier turns as context only.
+   */
   build(input: PromptInput): AiChatMessage[] {
-    if (input.allowModelKnowledge) {
-      // Relaxed framing: no strict page skill (it would force "只能根據資料庫").
-      const sys = input.scope ? `${RELAXED_SKILL}\n\n目前頁面範圍：${input.scope}` : RELAXED_SKILL;
-      const withContext =
-        input.context !== undefined && input.context !== null
-          ? `${sys}\n\n以下為資料庫快照（如有缺漏可用公開知識補充並標註推估）：\n${this.serialize(input.context)}`
-          : sys;
-      return [
-        { role: 'system', content: withContext },
-        { role: 'user', content: input.userPrompt },
-      ];
-    }
+    const system = input.allowModelKnowledge
+      ? this.relaxedSystem(input)
+      : this.strictSystem(input);
+    return this.assemble(system, input.userPrompt, input.history);
+  }
 
+  /** Relaxed framing: no strict page skill (it would force "只能根據資料庫"). */
+  private relaxedSystem(input: PromptInput): string {
+    const sys = input.scope ? `${RELAXED_SKILL}\n\n目前頁面範圍：${input.scope}` : RELAXED_SKILL;
+    return input.context !== undefined && input.context !== null
+      ? `${sys}\n\n以下為資料庫快照（如有缺漏可用公開知識補充並標註推估）：\n${this.serialize(input.context)}`
+      : sys;
+  }
+
+  private strictSystem(input: PromptInput): string {
     const parts: string[] = [GLOBAL_SKILL];
-
     const pageSkill = PAGE_SKILL[TASK_ENTITY_TYPE[input.taskType]];
     if (pageSkill) {
       parts.push(pageSkill);
@@ -76,10 +85,38 @@ export class AiPromptService {
     if (input.context !== undefined && input.context !== null) {
       parts.push(`以下為資料庫快照（請僅根據此資料回答）：\n${this.serialize(input.context)}`);
     }
+    return parts.join('\n\n');
+  }
 
+  /**
+   * [system, user] when there's no history (unchanged behavior); otherwise
+   * [system(+note), ...history, {user: 【本次提問】…}].
+   */
+  private assemble(
+    system: string,
+    userPrompt: string,
+    history?: ChatTurn[] | null,
+  ): AiChatMessage[] {
+    const turns = (history ?? []).filter(
+      (t) =>
+        (t.role === 'user' || t.role === 'assistant') &&
+        typeof t.content === 'string' &&
+        t.content.trim().length > 0,
+    );
+    if (turns.length === 0) {
+      return [
+        { role: 'system', content: system },
+        { role: 'user', content: userPrompt },
+      ];
+    }
+    const sys =
+      `${system}\n\n` +
+      '以下對話包含歷史紀錄與最後的【本次提問】。請主要針對【本次提問】作答，' +
+      '先前對話僅作為理解上下文的參考，不可與資料庫快照衝突。';
     return [
-      { role: 'system', content: parts.join('\n\n') },
-      { role: 'user', content: input.userPrompt },
+      { role: 'system', content: sys },
+      ...turns.map((t): AiChatMessage => ({ role: t.role, content: t.content })),
+      { role: 'user', content: `【本次提問】\n${userPrompt}` },
     ];
   }
 

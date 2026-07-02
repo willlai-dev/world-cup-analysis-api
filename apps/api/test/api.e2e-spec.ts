@@ -190,6 +190,21 @@ describe("AI World Cup Analyst API (e2e)", () => {
     expect(res.body.data.provider).toBe("PROGRAM_RULE");
   });
 
+  it("USER AI chat accepts multi-turn history -> 200 (mock)", async () => {
+    const res = await request(http)
+      .post("/api/ai/chat")
+      .set("Cookie", userCookie)
+      .send({
+        question: "他狀態如何？",
+        history: [
+          { role: "user", content: "Mbappé 是誰？" },
+          { role: "assistant", content: "他是法國前鋒。" },
+        ],
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.data.provider).toBe("PROGRAM_RULE");
+  });
+
   // ---------------------------------------------------------------------------
   // Match refresh endpoint
   // ---------------------------------------------------------------------------

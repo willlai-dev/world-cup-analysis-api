@@ -15,6 +15,11 @@ describe('QuestionIntentResolver', () => {
     expect(res.categories).toEqual(['MATCH']);
   });
 
+  it('classifies「對陣 / 接下來」opponent questions as MATCH_QUERY', () => {
+    expect(resolver.resolve('接下來法國對陣誰').categories).toContain('MATCH');
+    expect(resolver.resolve('下一場出戰哪一隊').categories).toContain('MATCH');
+  });
+
   it('classifies a team-strength question as TEAM_QUERY', () => {
     const res = resolver.resolve('巴西的戰力和陣容如何');
     expect(res.intent).toBe('TEAM_QUERY');

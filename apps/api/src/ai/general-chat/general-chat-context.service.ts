@@ -22,7 +22,8 @@ const CATEGORY_LABEL: Record<GeneralChatCategory, string> = {
 
 const MAX_CHAMPION_ENTRIES = 8;
 const MAX_MATCHES = 12;
-const MAX_TEAM_MATCHES = 8;
+const MAX_RECENT_MATCHES = 6;
+const MAX_UPCOMING_MATCHES = 24;
 const MAX_PLAYERS = 6;
 const MAX_TEAMS = 5;
 const MAX_NEWS = 5;
@@ -46,9 +47,15 @@ export class GeneralChatContextService {
     private readonly matcher: EntityMatcher,
   ) {}
 
-  async build(question: string): Promise<GeneralChatContext> {
+  /**
+   * @param priorText Recent user turns concatenated — used only to widen entity
+   *   matching so references like「他/這隊」resolve to a previously named entity.
+   *   Intent is still classified from the current question alone.
+   */
+  async build(question: string, priorText = ''): Promise<GeneralChatContext> {
     const { categories } = this.resolver.resolve(question);
-    const entities = await this.matcher.match(question);
+    const matchText = priorText ? `${question} ${priorText}` : question;
+    const entities = await this.matcher.match(matchText);
     const teamIds = entities.teams.map((t) => t.id);
     const playerIds = entities.players.map((p) => p.id);
 
@@ -71,6 +78,21 @@ export class GeneralChatContextService {
       }
     }
 
+    // Naming a team or player → bundle the relevant team(s) fixtures (past results
+    // + upcoming), so「接下來(法國)對陣誰 / 上一場結果」work even when no match
+    // keyword fired. Players carry their teamId, so「Mbappe 下一場」resolves too.
+    const fixtureTeamIds = [...new Set([...teamIds, ...entities.players.map((p) => p.teamId)])];
+    if (fixtureTeamIds.length) {
+      const fixtures = await this.loadMatches(fixtureTeamIds);
+      if (fixtures.items.length) {
+        context.matches = fixtures.items;
+        // Reference time so the model can resolve「接下來/今天/明天」against kickoff (UTC).
+        context.now = new Date().toISOString();
+        sources.push(...fixtures.sources);
+        labels.push(CATEGORY_LABEL.MATCH);
+      }
+    }
+
     if (cats.has('CHAMPION')) {
       const champion = await this.loadChampion();
       if (champion) {
@@ -80,10 +102,14 @@ export class GeneralChatContextService {
       }
     }
 
-    if (cats.has('MATCH')) {
+    // General match questions with no named entity (fixtures are already bundled
+    // above when an entity was named).
+    if (cats.has('MATCH') && !context.matches) {
       const matches = await this.loadMatches(teamIds);
       if (matches.items.length) {
         context.matches = matches.items;
+        // Reference time so the model can resolve「今天/明天」against kickoff (UTC).
+        context.now = new Date().toISOString();
         sources.push(...matches.sources);
         labels.push(CATEGORY_LABEL.MATCH);
       }
@@ -205,34 +231,32 @@ export class GeneralChatContextService {
       return this.toMatchSlice(rows);
     }
 
-    const now = new Date();
-    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const end = new Date(start);
-    end.setDate(end.getDate() + 1);
-    const todays = await this.prisma.match.findMany({
-      where: { kickoffAt: { gte: start, lt: end } },
-      orderBy: [{ kickoffAt: 'asc' }, { id: 'asc' }],
-      take: MAX_MATCHES,
-      select: this.matchSelect(),
-    });
-    if (todays.length) return this.toMatchSlice(todays);
-
-    // No matches today → mix upcoming + most-recent finished.
-    const [upcoming, recent] = await Promise.all([
-      this.prisma.match.findMany({
-        where: { status: MatchStatus.SCHEDULED, kickoffAt: { gte: now } },
-        orderBy: [{ kickoffAt: 'asc' }, { id: 'asc' }],
-        take: MAX_TEAM_MATCHES,
-        select: this.matchSelect(),
-      }),
+    // No specific team: recent finished (for「最近/昨天」) + any live + a broad
+    // window of upcoming SCHEDULED matches (for「未開始/今天/明天/某月某日」).
+    // Crucially we always include upcoming across several days — not just
+    // "today" — so date-specific questions can be answered from the snapshot.
+    const [recent, live, upcoming] = await Promise.all([
       this.prisma.match.findMany({
         where: { status: MatchStatus.FINISHED },
         orderBy: [{ kickoffAt: 'desc' }, { id: 'asc' }],
-        take: MAX_TEAM_MATCHES,
+        take: MAX_RECENT_MATCHES,
+        select: this.matchSelect(),
+      }),
+      this.prisma.match.findMany({
+        where: { status: MatchStatus.LIVE },
+        orderBy: [{ kickoffAt: 'asc' }, { id: 'asc' }],
+        take: MAX_MATCHES,
+        select: this.matchSelect(),
+      }),
+      this.prisma.match.findMany({
+        where: { status: MatchStatus.SCHEDULED },
+        orderBy: [{ kickoffAt: 'asc' }, { id: 'asc' }],
+        take: MAX_UPCOMING_MATCHES,
         select: this.matchSelect(),
       }),
     ]);
-    return this.toMatchSlice([...recent, ...upcoming]);
+    // recent is newest-first → reverse to chronological, then live, then upcoming.
+    return this.toMatchSlice([...recent.reverse(), ...live, ...upcoming]);
   }
 
   private async loadPlayers(playerIds: string[], teamIds: string[]): Promise<Slice<unknown>> {

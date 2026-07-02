@@ -89,27 +89,34 @@ describe('GeneralChatContextService', () => {
     expect(res.sourceUpdatedAt).toBe(NOW.toISOString());
   });
 
-  it('builds match context for a fixtures question', async () => {
+  it('builds match context from recent + live + upcoming, includes now, for a fixtures question', async () => {
     const { service, prisma, matcher } = build();
     matcher.match.mockResolvedValue(emptyEntities);
-    prisma.match.findMany.mockResolvedValue([
-      {
-        kickoffAt: NOW,
-        status: 'SCHEDULED',
-        stage: 'GROUP',
-        groupName: 'A',
-        homeScore: null,
-        awayScore: null,
-        sourceUpdatedAt: NOW,
-        homeTeam: { nameEn: 'France', nameZh: '法國' },
-        awayTeam: { nameEn: 'Brazil', nameZh: '巴西' },
-      },
-    ]);
+    const upcomingMatch = {
+      kickoffAt: NOW,
+      status: 'SCHEDULED',
+      stage: 'ROUND_OF_32',
+      groupName: null,
+      homeScore: null,
+      awayScore: null,
+      sourceUpdatedAt: NOW,
+      homeTeam: { nameEn: 'Spain', nameZh: '西班牙' },
+      awayTeam: { nameEn: 'Austria', nameZh: '奧地利' },
+    };
+    // loadMatches([]) issues 3 queries in order: recent FINISHED, live, upcoming SCHEDULED.
+    prisma.match.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([upcomingMatch]);
 
-    const res = await service.build('今天有哪些比賽');
+    const res = await service.build('明天有哪些未開始的賽事');
 
     expect(res.context).toHaveProperty('matches');
+    expect(res.context).toHaveProperty('now');
     expect(res.scope).toContain('賽事');
+    // Upcoming query must filter by SCHEDULED (not just a "today" window).
+    const statuses = prisma.match.findMany.mock.calls.map((c) => c[0].where?.status);
+    expect(statuses).toContain('SCHEDULED');
   });
 
   it('builds both team and player context for "法國有哪些高評級球員"', async () => {
@@ -167,6 +174,83 @@ describe('GeneralChatContextService', () => {
     expect(res.context).toBeUndefined();
     expect(res.sourceUpdatedAt).toBeNull();
     expect(res.scope).toBe('一般問答');
+  });
+
+  it('bundles the named team fixtures even without a match keyword (介紹一下法國)', async () => {
+    const { service, prisma, matcher } = build();
+    matcher.match.mockResolvedValue({
+      teams: [{ id: 'fr', nameEn: 'France', nameZh: '法國', fifaCode: 'FRA' }],
+      players: [],
+    });
+    prisma.team.findMany.mockResolvedValue([teamRow()]);
+    prisma.match.findMany.mockResolvedValue([
+      {
+        kickoffAt: NOW,
+        status: 'SCHEDULED',
+        stage: 'ROUND_OF_16',
+        groupName: null,
+        homeScore: null,
+        awayScore: null,
+        sourceUpdatedAt: NOW,
+        homeTeam: { nameEn: 'Paraguay', nameZh: '巴拉圭' },
+        awayTeam: { nameEn: 'France', nameZh: '法國' },
+      },
+    ]);
+
+    const res = await service.build('介紹一下法國');
+
+    expect(res.context).toHaveProperty('teams');
+    expect(res.context).toHaveProperty('matches'); // fixtures bundled from the entity
+    expect(res.context).toHaveProperty('now');
+    // fixtures queried scoped to the named team
+    expect(prisma.match.findMany.mock.calls[0][0].where).toEqual({
+      OR: [{ homeTeamId: { in: ['fr'] } }, { awayTeamId: { in: ['fr'] } }],
+    });
+  });
+
+  it("bundles the player's team fixtures when only a player is named (Mbappe 接下來對陣誰)", async () => {
+    const { service, prisma, matcher } = build();
+    matcher.match.mockResolvedValue({
+      teams: [],
+      players: [{ id: 'p1', nameEn: 'Kylian Mbappé', nameZh: null, teamId: 'fr' }],
+    });
+    prisma.player.findMany.mockResolvedValue([playerRow()]);
+    prisma.match.findMany.mockResolvedValue([
+      {
+        kickoffAt: NOW,
+        status: 'SCHEDULED',
+        stage: 'ROUND_OF_16',
+        groupName: null,
+        homeScore: null,
+        awayScore: null,
+        sourceUpdatedAt: NOW,
+        homeTeam: { nameEn: 'Paraguay', nameZh: '巴拉圭' },
+        awayTeam: { nameEn: 'France', nameZh: '法國' },
+      },
+    ]);
+
+    const res = await service.build('Mbappe 接下來對陣誰');
+
+    expect(res.context).toHaveProperty('matches');
+    const teamScoped = prisma.match.findMany.mock.calls.find((c) => c[0].where?.OR);
+    expect(teamScoped?.[0].where).toEqual({
+      OR: [{ homeTeamId: { in: ['fr'] } }, { awayTeamId: { in: ['fr'] } }],
+    });
+  });
+
+  it('widens entity matching with prior turns (pronoun carryover)', async () => {
+    const { service, prisma, matcher } = build();
+    matcher.match.mockResolvedValue({
+      teams: [],
+      players: [{ id: 'p1', nameEn: 'Kylian Mbappé', nameZh: null, teamId: 'fr' }],
+    });
+    prisma.player.findMany.mockResolvedValue([playerRow()]);
+
+    const res = await service.build('他狀態如何？', 'Mbappe 是誰');
+
+    // matcher receives current question + prior text so 「他」 resolves to Mbappé
+    expect(matcher.match).toHaveBeenCalledWith('他狀態如何？ Mbappe 是誰');
+    expect(res.context).toHaveProperty('players');
   });
 
   it('falls back to champion/matches/news for an UNKNOWN question with data present', async () => {

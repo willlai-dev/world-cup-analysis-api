@@ -687,16 +687,19 @@ Behavior notes:
 
 ### 5.11 AI Chat
 
-| Method | Path           | Status | Access                   | Request        | Success `data`  |
-| ------ | -------------- | ------ | ------------------------ | -------------- | --------------- |
-| POST   | `/api/ai/chat` | 201    | `USER` or `PREMIUM` only | `{ question }` | `ChatAnswerDto` |
+| Method | Path           | Status | Access                   | Request                 | Success `data`  |
+| ------ | -------------- | ------ | ------------------------ | ----------------------- | --------------- |
+| POST   | `/api/ai/chat` | 201    | `USER` or `PREMIUM` only | `{ question, history? }` | `ChatAnswerDto` |
 
 Behavior notes:
 
 - `question` length must be `1..1000`.
+- `history?`: optional array of prior conversation turns, oldest→newest, each `{ role: "user" | "assistant", content: string }` (`content` ≤ 2000 chars, array ≤ 20 items). The backend uses only the **last 3 Q&A pairs (6 turns)**; extra turns are trimmed server-side. Frontend keeps and sends the visible chat log — the backend stores no conversation state.
 - `ADMIN` receives `403 FORBIDDEN` here.
 - Routes through the AI router `GENERAL_CHAT` (NVIDIA Super → Qwen Plus) with AI usage logging.
-- Under `AI_MOCK_MODE=true` the response is the deterministic `provider = "PROGRAM_RULE"`, `model = "mock"` mock.
+- Under `AI_MOCK_MODE=false` the answer is **grounded in a DB context** built from the question: intent is classified (match / team / player / news / champion / mixed / unknown), referenced teams/players are matched (recent user turns help resolve references like「他」), and only the relevant tables are queried. When nothing relevant is found the strict Global Skill answers「目前資料不足」. Prior turns are sent to the model with the current question flagged `【本次提問】`.
+- **Entity fixtures bundling:** when a team or player is named, the snapshot also includes that team's fixtures (recent results + upcoming) — so「接下來法國對陣誰 / Mbappe 下一場」are answerable even without a fixture keyword. For general fixture questions (no team named) the snapshot includes recent finished + live + a multi-day list of upcoming `SCHEDULED` matches plus a `now` timestamp, so「未開始 / 今天 / 明天 / 某月某日」can be answered from the snapshot.
+- Under `AI_MOCK_MODE=true` the response is the deterministic `provider = "PROGRAM_RULE"`, `model = "mock"` mock (history is accepted but ignored; scope stays `一般問答`).
   Under `AI_MOCK_MODE=false` `provider` is `NVIDIA`/`QWEN`; on total provider failure it degrades to a `PROGRAM_RULE` notice.
 
 ## 6. Backend-only Endpoints

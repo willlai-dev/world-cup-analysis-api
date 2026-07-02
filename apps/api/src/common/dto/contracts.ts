@@ -146,6 +146,12 @@ export type ChatAnswerDto = {
   sourceUpdatedAt?: string | null;
 };
 
+/** One prior conversation turn supplied by the client for multi-turn chat. */
+export type ChatTurn = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
 export type HomeHighlightsResponse = {
   featuredMatches: MatchSummary[];
   championSummary: ChampionPredictionEntrySummary[];

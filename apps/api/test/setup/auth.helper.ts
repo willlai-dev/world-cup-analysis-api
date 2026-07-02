@@ -25,3 +25,43 @@ export const SEED_CREDENTIALS = {
   premium: { email: 'premium@example.com', password: 'premium123456' },
   user: { email: 'user@example.com', password: 'user123456' },
 };
+
+/**
+ * Registers a brand-new user (unique email per run) and returns its cookie.
+ * The test DB is never truncated, so per-user quota counters (AiUsageLog /
+ * ChampionPredictionRun) accumulate across runs — every AI-consuming test
+ * must use a fresh user instead of the seeded accounts.
+ */
+export async function registerFreshUser(
+  app: NestFastifyApplication,
+  label: string,
+): Promise<{ cookie: string; userId: string }> {
+  const email = `${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.com`;
+  const password = 'password123';
+  const res = await request(app.getHttpServer())
+    .post('/api/auth/register')
+    .send({ email, password, displayName: label });
+  if (res.status !== 201) {
+    throw new Error(`register failed for ${email}: ${res.status} ${JSON.stringify(res.body)}`);
+  }
+  const userId: string = res.body.data.user.id;
+  const cookie = await login(app, email, password);
+  return { cookie, userId };
+}
+
+/** Registers a fresh user and promotes it to PREMIUM via the admin API. */
+export async function registerFreshPremium(
+  app: NestFastifyApplication,
+  adminCookie: string,
+  label: string,
+): Promise<{ cookie: string; userId: string }> {
+  const fresh = await registerFreshUser(app, label);
+  const res = await request(app.getHttpServer())
+    .patch(`/api/admin/users/${fresh.userId}/role`)
+    .set('Cookie', adminCookie)
+    .send({ role: 'PREMIUM' });
+  if (res.status !== 200) {
+    throw new Error(`promote failed for ${fresh.userId}: ${res.status} ${JSON.stringify(res.body)}`);
+  }
+  return fresh;
+}

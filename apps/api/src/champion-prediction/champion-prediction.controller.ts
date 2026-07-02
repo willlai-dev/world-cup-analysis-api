@@ -6,6 +6,8 @@ import type { ChampionPredictionResponse, ChatAnswerDto } from '../common/dto/co
 import { NonAdminUserGuard } from '../common/guards/non-admin-user.guard';
 import { PremiumOnlyGuard } from '../common/guards/premium-only.guard';
 import type { AuthenticatedUser } from '../common/types/authenticated-user';
+import { AiQuota } from '../ai/quota/ai-quota.decorator';
+import { QuotaGuard } from '../ai/quota/quota.guard';
 import { ChampionPredictionService } from './champion-prediction.service';
 
 @ApiTags('champion-predictions')
@@ -26,13 +28,15 @@ export class ChampionPredictionController {
 
   @Post('recalculate')
   @HttpCode(200)
-  @UseGuards(PremiumOnlyGuard)
+  @UseGuards(PremiumOnlyGuard, QuotaGuard)
+  @AiQuota('CHAMPION_RECALCULATE')
   recalculate(@CurrentUser() user: AuthenticatedUser): Promise<ChampionPredictionResponse> {
     return this.champion.recalculate(user.id);
   }
 
   @Post('deep-chat')
-  @UseGuards(PremiumOnlyGuard)
+  @UseGuards(PremiumOnlyGuard, QuotaGuard)
+  @AiQuota('DEEP_CHAT')
   deepChat(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: ChatQuestionDto,

@@ -6,6 +6,8 @@ import type { ChatAnswerDto } from '../common/dto/contracts';
 import { NonAdminUserGuard } from '../common/guards/non-admin-user.guard';
 import type { AuthenticatedUser } from '../common/types/authenticated-user';
 import { AiService } from './ai.service';
+import { AiQuota } from './quota/ai-quota.decorator';
+import { QuotaGuard } from './quota/quota.guard';
 
 @ApiTags('ai')
 @Controller('ai')
@@ -14,6 +16,8 @@ export class AiController {
   constructor(private readonly ai: AiService) {}
 
   @Post('chat')
+  @UseGuards(QuotaGuard)
+  @AiQuota('GENERAL_CHAT')
   chat(
     @CurrentUser() user: AuthenticatedUser,
     @Body() dto: ChatQuestionDto,

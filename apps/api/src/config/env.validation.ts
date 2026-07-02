@@ -64,6 +64,29 @@ export const envSchema = z.object({
   NEWS_API_BASE_URL: z.string().default("https://newsapi.org/v2"),
 
   AI_MOCK_MODE: boolFromString(true),
+
+  // AI quota (Phase 3) — per-user windows; counts successful calls only
+  AI_QUOTA_GENERAL_CHAT_USER_PER_DAY: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(20),
+  AI_QUOTA_GENERAL_CHAT_PREMIUM_PER_DAY: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(100),
+  AI_QUOTA_NEWS_TRANSLATION_PER_DAY: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(30),
+  AI_QUOTA_DEEP_CHAT_PER_DAY: z.coerce.number().int().positive().default(50),
+  AI_QUOTA_CHAMPION_RECALCULATE_PER_WEEK: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(3),
 });
 
 export type Env = z.infer<typeof envSchema>;

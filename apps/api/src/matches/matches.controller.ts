@@ -23,6 +23,8 @@ import type {
 import { NonAdminUserGuard } from "../common/guards/non-admin-user.guard";
 import { PremiumOnlyGuard } from "../common/guards/premium-only.guard";
 import type { AuthenticatedUser } from "../common/types/authenticated-user";
+import { AiQuota } from "../ai/quota/ai-quota.decorator";
+import { QuotaGuard } from "../ai/quota/quota.guard";
 import { MatchRefreshService } from "./match-refresh.service";
 import { ListMatchesQueryDto } from "./dto/list-matches-query.dto";
 import { type MatchDetailDto, MatchesService } from "./matches.service";
@@ -90,7 +92,8 @@ export class MatchesController {
   }
 
   @Post(":matchId/deep-chat")
-  @UseGuards(PremiumOnlyGuard)
+  @UseGuards(PremiumOnlyGuard, QuotaGuard)
+  @AiQuota("DEEP_CHAT")
   deepChat(
     @CurrentUser() user: AuthenticatedUser,
     @Param("matchId") matchId: string,

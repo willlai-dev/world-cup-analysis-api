@@ -69,6 +69,19 @@ export class AppConfigService {
   get aiMockMode(): boolean {
     return this.get("AI_MOCK_MODE");
   }
+  get aiQuota() {
+    return {
+      generalChatUserPerDay: this.get("AI_QUOTA_GENERAL_CHAT_USER_PER_DAY"),
+      generalChatPremiumPerDay: this.get(
+        "AI_QUOTA_GENERAL_CHAT_PREMIUM_PER_DAY",
+      ),
+      newsTranslationPerDay: this.get("AI_QUOTA_NEWS_TRANSLATION_PER_DAY"),
+      deepChatPerDay: this.get("AI_QUOTA_DEEP_CHAT_PER_DAY"),
+      championRecalculatePerWeek: this.get(
+        "AI_QUOTA_CHAMPION_RECALCULATE_PER_WEEK",
+      ),
+    };
+  }
   get nvidia() {
     return {
       apiKey: this.get("NVIDIA_API_KEY"),

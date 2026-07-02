@@ -702,6 +702,27 @@ Behavior notes:
 - Under `AI_MOCK_MODE=true` the response is the deterministic `provider = "PROGRAM_RULE"`, `model = "mock"` mock (history is accepted but ignored; scope stays `一般問答`).
   Under `AI_MOCK_MODE=false` `provider` is `NVIDIA`/`QWEN`; on total provider failure it degrades to a `PROGRAM_RULE` notice.
 
+### 5.12 AI Quota (Phase 3)
+
+Per-user quota is enforced on every AI-consuming endpoint. Exceeding a bucket returns
+`429` with `error.code = "AI_QUOTA_EXCEEDED"` and
+`error.details = { quotaKey, limit, used, resetAt }` (`resetAt` = ISO start of the next window).
+
+| Quota bucket (`quotaKey`) | Endpoints | Limit (default) | Window |
+|---|---|---|---|
+| `GENERAL_CHAT` | `POST /api/ai/chat` | USER 20 / PREMIUM 100 | per day (server-local calendar day) |
+| `DEEP_CHAT` | all five `*/deep-chat` routes combined | PREMIUM 50 | per day |
+| `NEWS_TRANSLATION` | `POST /api/news/:newsId/translate` | PREMIUM 30 | per day |
+| `CHAMPION_RECALCULATE` | `POST /api/champion-predictions/recalculate` | PREMIUM 3 | per ISO week (Mon 00:00 server-local) |
+
+Notes:
+
+- Limits are env-overridable (`AI_QUOTA_*`, see `apps/api/src/config/env.validation.ts`).
+- Only **successful** calls consume quota (chat/deep-chat/translate count `DONE` rows in
+  `AiUsageLog`; recalculate counts `PREMIUM_USER` rows in `ChampionPredictionRun`). A call that
+  fails on every provider does not consume quota. Mock-mode calls do consume quota.
+- `POST /api/matches/:matchId/refresh` calls no AI and has **no quota** (cooldown only).
+
 ## 6. Backend-only Endpoints
 
 These routes exist, but product UI should not call them.
@@ -772,7 +793,7 @@ Failure note:
 
 - Route-level check: no product endpoint listed in `worldcup_ai_backend_agent_docs/07_BACKEND_READONLY_FRONTEND_CONTRACT.md` is missing. The current backend implements every route from that list.
 - Phase 2 (done): real NVIDIA/Qwen routing is wired for `POST /api/ai/chat`, all `*/deep-chat` routes, `POST /api/news/:newsId/translate`, and `POST /api/champion-predictions/recalculate` via the `AiRouterService`. Behavior depends on `AI_MOCK_MODE` (mock short-circuit) and degrades gracefully on provider failure.
-- AI quota enforcement (`429 AI_QUOTA_EXCEEDED`) is not yet enforced; every provider call is still recorded in `AiUsageLog`.
+- Phase 3 (done): AI quota enforcement (`429 AI_QUOTA_EXCEEDED`) is live on all AI-consuming endpoints — see §5.12. Every provider call is still recorded in `AiUsageLog`.
 - Data-fetch jobs are implemented: `sync-teams` / `sync-players` / `sync-fixtures` / `sync-results`
   (football-data.org) and `fetch-news` (Guardian + NewsAPI), each with a no-key skip.
 - AI-generation jobs are implemented: `generate-news-summary` / `generate-player-ratings` /
@@ -784,7 +805,7 @@ Failure note:
   `/api/jobs/*` still works.
 - Team `nameZh` is now populated for synced teams via `sources/football-data/country-names.ts`
   (fifaCode → 繁中); frontend can display Chinese names.
-- Not yet implemented: quota-429 enforcement, group-stage (non-knockout) elimination derivation.
+- Not yet implemented: group-stage (non-knockout) elimination derivation.
 
 ### SPEC_MISMATCH
 
@@ -809,6 +830,7 @@ These are the concrete `error.code` values currently thrown in application code.
 - `CANNOT_DISABLE_SELF`
 - `LAST_ADMIN_PROTECTED`
 - `DB_UNAVAILABLE`
+- `AI_QUOTA_EXCEEDED`
 
 Frontend handling guidance:
 
@@ -817,4 +839,5 @@ Frontend handling guidance:
 - Treat `403 FORBIDDEN` as role mismatch.
 - Treat `404 NOT_FOUND` as missing resource.
 - Treat `409` conflicts by `error.code`, especially `EMAIL_TAKEN`, `CANNOT_DISABLE_SELF`, and `LAST_ADMIN_PROTECTED`.
+- Treat `429 AI_QUOTA_EXCEEDED` as quota exhaustion: show `error.message` and use `error.details.resetAt` for a "try again after" hint (see §5.12).
 - When validation errors contain multiple messages, current backend joins them into a single `error.message` string separated by `; ` and also places the array into `error.details`.

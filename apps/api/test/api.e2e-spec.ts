@@ -1,6 +1,11 @@
 import type { NestFastifyApplication } from "@nestjs/platform-fastify";
 import request from "supertest";
-import { login, SEED_CREDENTIALS } from "./setup/auth.helper";
+import {
+  login,
+  registerFreshPremium,
+  registerFreshUser,
+  SEED_CREDENTIALS,
+} from "./setup/auth.helper";
 import { createTestApp } from "./setup/test-app.factory";
 
 const SEED_NEWS_ID = "seed-news-1";
@@ -13,6 +18,10 @@ describe("AI World Cup Analyst API (e2e)", () => {
   let adminCookie: string;
   let premiumCookie: string;
   let userCookie: string;
+  // Fresh per-run accounts for AI-consuming calls — quota counters live in
+  // the never-truncated test DB, so seeded accounts would flake across runs.
+  let aiUserCookie: string;
+  let aiPremiumCookie: string;
 
   beforeAll(async () => {
     app = await createTestApp();
@@ -32,6 +41,10 @@ describe("AI World Cup Analyst API (e2e)", () => {
       SEED_CREDENTIALS.user.email,
       SEED_CREDENTIALS.user.password,
     );
+    aiUserCookie = (await registerFreshUser(app, "ai-user")).cookie;
+    aiPremiumCookie = (
+      await registerFreshPremium(app, adminCookie, "ai-premium")
+    ).cookie;
   });
 
   afterAll(async () => {
@@ -111,7 +124,7 @@ describe("AI World Cup Analyst API (e2e)", () => {
   it("10. PREMIUM POST /api/news/:id/translate -> 200 (mock)", async () => {
     const res = await request(http)
       .post(`/api/news/${SEED_NEWS_ID}/translate`)
-      .set("Cookie", premiumCookie);
+      .set("Cookie", aiPremiumCookie);
     expect(res.status).toBe(200);
     expect(res.body.data.translationStatus).toBe("DONE");
     expect(res.body.data.translatedContentZh).toContain("AI_MOCK_MODE");
@@ -127,7 +140,7 @@ describe("AI World Cup Analyst API (e2e)", () => {
   it("12. PREMIUM POST /api/champion-predictions/recalculate -> 200", async () => {
     const res = await request(http)
       .post("/api/champion-predictions/recalculate")
-      .set("Cookie", premiumCookie);
+      .set("Cookie", aiPremiumCookie);
     expect(res.status).toBe(200);
     expect(res.body.data.runId).toBeDefined();
     expect(["DONE", "RUNNING", "PENDING"]).toContain(res.body.data.status);
@@ -184,7 +197,7 @@ describe("AI World Cup Analyst API (e2e)", () => {
   it("USER can use AI chat -> 200 (mock)", async () => {
     const res = await request(http)
       .post("/api/ai/chat")
-      .set("Cookie", userCookie)
+      .set("Cookie", aiUserCookie)
       .send({ question: "目前冠軍預測前三名是誰？" });
     expect(res.status).toBe(201);
     expect(res.body.data.provider).toBe("PROGRAM_RULE");
@@ -193,7 +206,7 @@ describe("AI World Cup Analyst API (e2e)", () => {
   it("USER AI chat accepts multi-turn history -> 200 (mock)", async () => {
     const res = await request(http)
       .post("/api/ai/chat")
-      .set("Cookie", userCookie)
+      .set("Cookie", aiUserCookie)
       .send({
         question: "他狀態如何？",
         history: [
@@ -269,4 +282,47 @@ describe("AI World Cup Analyst API (e2e)", () => {
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("NOT_FOUND");
   });
+
+  // ---------------------------------------------------------------------------
+  // AI quota (Phase 3) — dedicated fresh users so counts start at zero
+  // ---------------------------------------------------------------------------
+
+  it("22. USER exceeding daily general-chat quota -> 429 AI_QUOTA_EXCEEDED", async () => {
+    const { cookie } = await registerFreshUser(app, "quota-user");
+    for (let i = 0; i < 20; i++) {
+      await request(http)
+        .post("/api/ai/chat")
+        .set("Cookie", cookie)
+        .send({ question: `第 ${i + 1} 次提問` })
+        .expect(201);
+    }
+    const res = await request(http)
+      .post("/api/ai/chat")
+      .set("Cookie", cookie)
+      .send({ question: "第 21 次提問" });
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe("AI_QUOTA_EXCEEDED");
+    expect(res.body.error.details).toMatchObject({
+      quotaKey: "GENERAL_CHAT",
+      limit: 20,
+      used: 20,
+    });
+    expect(res.body.error.details.resetAt).toBeDefined();
+  }, 30000);
+
+  it("23. PREMIUM 4th champion recalculate this week -> 429 AI_QUOTA_EXCEEDED", async () => {
+    const { cookie } = await registerFreshPremium(app, adminCookie, "quota-premium");
+    for (let i = 0; i < 3; i++) {
+      await request(http)
+        .post("/api/champion-predictions/recalculate")
+        .set("Cookie", cookie)
+        .expect(200);
+    }
+    const res = await request(http)
+      .post("/api/champion-predictions/recalculate")
+      .set("Cookie", cookie);
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe("AI_QUOTA_EXCEEDED");
+    expect(res.body.error.details.quotaKey).toBe("CHAMPION_RECALCULATE");
+  }, 30000);
 });

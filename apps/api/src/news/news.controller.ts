@@ -7,6 +7,8 @@ import type { ChatAnswerDto, NewsSummary } from '../common/dto/contracts';
 import { NonAdminUserGuard } from '../common/guards/non-admin-user.guard';
 import { PremiumOnlyGuard } from '../common/guards/premium-only.guard';
 import type { AuthenticatedUser } from '../common/types/authenticated-user';
+import { AiQuota } from '../ai/quota/ai-quota.decorator';
+import { QuotaGuard } from '../ai/quota/quota.guard';
 import { ListNewsQueryDto } from './dto/list-news-query.dto';
 import { type NewsDetailDto, NewsService } from './news.service';
 
@@ -29,7 +31,8 @@ export class NewsController {
 
   @Post(':newsId/translate')
   @HttpCode(200)
-  @UseGuards(PremiumOnlyGuard)
+  @UseGuards(PremiumOnlyGuard, QuotaGuard)
+  @AiQuota('NEWS_TRANSLATION')
   translate(
     @CurrentUser() user: AuthenticatedUser,
     @Param('newsId') newsId: string,
@@ -38,7 +41,8 @@ export class NewsController {
   }
 
   @Post(':newsId/deep-chat')
-  @UseGuards(PremiumOnlyGuard)
+  @UseGuards(PremiumOnlyGuard, QuotaGuard)
+  @AiQuota('DEEP_CHAT')
   deepChat(
     @CurrentUser() user: AuthenticatedUser,
     @Param('newsId') newsId: string,

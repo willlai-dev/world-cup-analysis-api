@@ -13,6 +13,8 @@ import type {
 import { NonAdminUserGuard } from '../common/guards/non-admin-user.guard';
 import { PremiumOnlyGuard } from '../common/guards/premium-only.guard';
 import type { AuthenticatedUser } from '../common/types/authenticated-user';
+import { AiQuota } from '../ai/quota/ai-quota.decorator';
+import { QuotaGuard } from '../ai/quota/quota.guard';
 import { ListTeamsQueryDto } from './dto/list-teams-query.dto';
 import { TeamsService } from './teams.service';
 
@@ -49,7 +51,8 @@ export class TeamsController {
   }
 
   @Post(':teamId/deep-chat')
-  @UseGuards(PremiumOnlyGuard)
+  @UseGuards(PremiumOnlyGuard, QuotaGuard)
+  @AiQuota('DEEP_CHAT')
   deepChat(
     @CurrentUser() user: AuthenticatedUser,
     @Param('teamId') teamId: string,

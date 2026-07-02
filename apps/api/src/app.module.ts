@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AdminModule } from './admin/admin.module';
 import { AiModule } from './ai/ai.module';
+import { QuotaModule } from './ai/quota/quota.module';
 import { AuthModule } from './auth/auth.module';
 import { ChampionPredictionModule } from './champion-prediction/champion-prediction.module';
 import { ConfigModule } from './config/config.module';
@@ -21,6 +22,7 @@ import { UsersModule } from './users/users.module';
     ScheduleModule.forRoot(),
     ConfigModule,
     PrismaModule,
+    QuotaModule,
     AuthModule,
     UsersModule,
     AdminModule,

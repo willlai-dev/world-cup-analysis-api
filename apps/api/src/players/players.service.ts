@@ -150,8 +150,11 @@ export class PlayersService {
 
   /** Job: hexagon rating per player — saves an AiReport and (real mode) writes scores back. */
   async generateRatings(): Promise<GenerationResult> {
+    // Players on still-in-tournament teams first (team.isEliminated=false sorts
+    // before true), so the per-run cap spends the AI budget on live squads before
+    // knocked-out ones. Eliminated teams' players get whatever budget remains.
     const players = await this.prisma.player.findMany({
-      orderBy: { id: "asc" },
+      orderBy: [{ team: { isEliminated: "asc" } }, { id: "asc" }],
       select: {
         id: true,
         nameEn: true,

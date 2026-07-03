@@ -159,8 +159,11 @@ export class TeamsService {
    * whose squad/results haven't moved since the last run.
    */
   async generateRatings(): Promise<GenerationResult> {
+    // Still-in-tournament teams first (isEliminated=false sorts before true), so
+    // when the per-run cap is hit the live contenders get scored, not knocked-out
+    // sides. Eliminated teams are still refreshed with whatever budget remains.
     const teams = await this.prisma.team.findMany({
-      orderBy: { id: "asc" },
+      orderBy: [{ isEliminated: "asc" }, { id: "asc" }],
       select: {
         id: true,
         nameEn: true,

@@ -386,4 +386,43 @@ describe("AI World Cup Analyst API (e2e)", () => {
     expect(res.body.error.code).toBe("AI_QUOTA_EXCEEDED");
     expect(res.body.error.details.quotaKey).toBe("CHAMPION_RECALCULATE");
   }, 30000);
+
+  // ---------------------------------------------------------------------------
+  // Admin manual pipeline trigger (§6.2.1)
+  // ---------------------------------------------------------------------------
+
+  it("28. Non-admin POST /api/admin/jobs/run -> 403 FORBIDDEN", async () => {
+    const res = await request(http)
+      .post("/api/admin/jobs/run")
+      .set("Cookie", userCookie)
+      .send({ pipeline: "SYNC" });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("FORBIDDEN");
+  });
+
+  it("29. ADMIN POST /api/admin/jobs/run -> 202 (background; no keys => jobs skip)", async () => {
+    const res = await request(http)
+      .post("/api/admin/jobs/run")
+      .set("Cookie", adminCookie)
+      .send({ jobs: ["SYNC_TEAMS"] });
+    expect(res.status).toBe(202);
+    expect(res.body.error).toBeNull();
+    expect(res.body.data.started).toBe(true);
+    expect(res.body.data.label).toBe("manual-custom");
+    expect(res.body.data.jobTypes).toEqual(["SYNC_TEAMS"]);
+  });
+
+  it("30. GET /api/admin/jobs/runs: ADMIN -> 200 array, USER -> 403", async () => {
+    const ok = await request(http)
+      .get("/api/admin/jobs/runs?limit=5")
+      .set("Cookie", adminCookie);
+    expect(ok.status).toBe(200);
+    expect(ok.body.error).toBeNull();
+    expect(Array.isArray(ok.body.data)).toBe(true);
+
+    const forbidden = await request(http)
+      .get("/api/admin/jobs/runs")
+      .set("Cookie", userCookie);
+    expect(forbidden.status).toBe(403);
+  });
 });

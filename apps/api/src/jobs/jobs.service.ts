@@ -1,5 +1,5 @@
-import { Injectable } from '@nestjs/common';
-import { JobStatus, JobType, Prisma } from '@prisma/client';
+import { Injectable, Logger } from '@nestjs/common';
+import { type JobRun, JobStatus, JobType, Prisma } from '@prisma/client';
 import { ChampionPredictionService } from '../champion-prediction/champion-prediction.service';
 import { MatchesService } from '../matches/matches.service';
 import { NewsService } from '../news/news.service';
@@ -21,8 +21,21 @@ export type JobResult = {
   metadata: unknown;
 };
 
+/** Outcome of running a named sequence of jobs (see JobsService.runPipeline). */
+export type PipelineResult = {
+  label: string;
+  /** false when another pipeline was already running, so this one was skipped. */
+  started: boolean;
+  /** Per-job results, in run order (empty when started=false). */
+  results: JobResult[];
+};
+
 @Injectable()
 export class JobsService {
+  private readonly logger = new Logger(JobsService.name);
+  /** Shared reentrancy guard so cron slots and manual admin runs never overlap. */
+  private pipelineRunning = false;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly teamSync: TeamSyncService,
@@ -59,13 +72,80 @@ export class JobsService {
       where: { id: started.id },
       data: { status, completedAt: new Date(), metadata },
     });
+    return this.toJobResult(done);
+  }
+
+  /** True while a pipeline (cron or manual) is in progress. */
+  get pipelineInProgress(): boolean {
+    return this.pipelineRunning;
+  }
+
+  /**
+   * Runs `pipeline`'s jobs one at a time, recording a JobRun for each. A single
+   * failing job is logged and the pipeline continues. Guarded so a second call
+   * (another cron slot, or a manual admin trigger) is skipped while one is live.
+   */
+  async runPipeline(label: string, pipeline: JobType[]): Promise<PipelineResult> {
+    if (this.pipelineRunning) {
+      this.logger.warn(`Pipeline still running; skipping "${label}".`);
+      return { label, started: false, results: [] };
+    }
+    this.pipelineRunning = true;
+    this.logger.log(`Pipeline "${label}" started (${pipeline.length} jobs).`);
+    const results: JobResult[] = [];
+    try {
+      for (const jobType of pipeline) {
+        try {
+          const result = await this.run(jobType);
+          results.push(result);
+          this.logger.log(`[${label}] ${jobType} -> ${result.status}`);
+        } catch (err) {
+          this.logger.error(`[${label}] ${jobType} failed: ${(err as Error).message}`);
+        }
+      }
+    } finally {
+      this.pipelineRunning = false;
+      this.logger.log(`Pipeline "${label}" finished.`);
+    }
+    return { label, started: true, results };
+  }
+
+  /**
+   * Fire-and-forget wrapper for manual triggers: returns synchronously whether
+   * the pipeline started (false if one was already running), then runs it in the
+   * background. Callers (the admin endpoint) respond 202 without waiting for the
+   * long sync + AI-generation work to finish.
+   */
+  startPipeline(label: string, pipeline: JobType[]): { started: boolean; jobTypes: JobType[] } {
+    if (this.pipelineRunning) {
+      return { started: false, jobTypes: pipeline };
+    }
+    // runPipeline flips the guard synchronously before its first await, so a
+    // rapid second call sees pipelineRunning=true — no overlap.
+    void this.runPipeline(label, pipeline).catch((err) =>
+      this.logger.error(`Pipeline "${label}" crashed: ${(err as Error).message}`),
+    );
+    return { started: true, jobTypes: pipeline };
+  }
+
+  /** Recent JobRun rows (newest first) for admins to observe pipeline progress. */
+  async listRuns(limit: number, jobType?: JobType): Promise<JobResult[]> {
+    const rows = await this.prisma.jobRun.findMany({
+      where: jobType ? { jobType } : undefined,
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+    return rows.map((row) => this.toJobResult(row));
+  }
+
+  private toJobResult(row: JobRun): JobResult {
     return {
-      jobRunId: done.id,
-      jobType: done.jobType,
-      status: done.status,
-      startedAt: done.startedAt ? done.startedAt.toISOString() : null,
-      completedAt: done.completedAt ? done.completedAt.toISOString() : null,
-      metadata: done.metadata ?? null,
+      jobRunId: row.id,
+      jobType: row.jobType,
+      status: row.status,
+      startedAt: row.startedAt ? row.startedAt.toISOString() : null,
+      completedAt: row.completedAt ? row.completedAt.toISOString() : null,
+      metadata: row.metadata ?? null,
     };
   }
 

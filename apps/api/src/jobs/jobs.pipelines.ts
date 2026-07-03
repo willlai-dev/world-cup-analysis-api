@@ -3,7 +3,7 @@ import { JobType } from '@prisma/client';
 /**
  * Named job sequences an admin can trigger manually (see AdminJobsController).
  * Separate from the cron slots in jobs.scheduler.ts: the cron pipeline is split
- * across time slots (02:00 team ratings, 06:00 player status) to avoid hammering
+ * across time slots (02:00 player+team ratings, 06:00 player status) to avoid hammering
  * NVIDIA, whereas a manual run wants everything now, in dependency order.
  *
  * Order matters:

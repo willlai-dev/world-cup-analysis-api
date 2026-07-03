@@ -3,7 +3,12 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { JobType } from '@prisma/client';
 import { JobsService } from './jobs.service';
 
-/** 04:00 full pipeline: refresh all external data, then (re)generate all AI analysis. */
+/**
+ * 04:00 full pipeline: refresh all external data, then regenerate news, match and
+ * champion analysis. Player + team ratings are generated earlier at 02:00 (so the
+ * champion predictions here rank by fresh team scores), and player status runs at
+ * 06:00 — see RATINGS_PIPELINE / PLAYER_STATUS_PIPELINE below.
+ */
 export const FULL_PIPELINE: JobType[] = [
   JobType.SYNC_TEAMS,
   JobType.SYNC_PLAYERS,
@@ -12,7 +17,6 @@ export const FULL_PIPELINE: JobType[] = [
   JobType.FETCH_NEWS,
   JobType.GENERATE_NEWS_SUMMARY,
   JobType.GENERATE_NEWS_IMPACT,
-  JobType.GENERATE_PLAYER_RATINGS,
   JobType.GENERATE_MATCH_ANALYSIS,
   JobType.GENERATE_CHAMPION_PREDICTIONS,
 ];
@@ -33,11 +37,16 @@ export const REFRESH_PIPELINE: JobType[] = [
 ];
 
 /**
- * 02:00 team ratings pass — runs BEFORE the 04:00 pipeline so champion
- * prediction (which ranks by championScore) sees fresh team scores. Kept on
- * its own slot to avoid piling onto NVIDIA during the main generate stage.
+ * 02:00 ratings pass — player ratings BEFORE team ratings (team scores read the
+ * squad's player scores, TeamsService.generateRatings), and the whole slot runs
+ * BEFORE the 04:00 pipeline so champion prediction (which ranks by championScore)
+ * sees fresh team scores. Kept on its own slot to avoid piling onto NVIDIA during
+ * the main 04:00 generate stage.
  */
-export const TEAM_RATINGS_PIPELINE: JobType[] = [JobType.GENERATE_TEAM_RATINGS];
+export const RATINGS_PIPELINE: JobType[] = [
+  JobType.GENERATE_PLAYER_RATINGS,
+  JobType.GENERATE_TEAM_RATINGS,
+];
 
 /**
  * 06:00 player status/injury pass — deliberately staggered 2h after the 04:00
@@ -48,8 +57,8 @@ export const PLAYER_STATUS_PIPELINE: JobType[] = [JobType.GENERATE_PLAYER_STATUS
 
 /**
  * Fires the sync + generate pipeline on a schedule. Slots are staggered (02:00
- * team ratings, 04:00 full, 06:00 player status, 12:00 refresh) because source
- * data can lag and to avoid hammering NVIDIA. Each slot delegates to
+ * player+team ratings, 04:00 full, 06:00 player status, 12:00 refresh) because
+ * source data can lag and to avoid hammering NVIDIA. Each slot delegates to
  * JobsService.runPipeline, whose shared reentrancy guard also blocks manual
  * admin triggers from overlapping a cron run (and vice-versa).
  */
@@ -58,8 +67,8 @@ export class JobsScheduler {
   constructor(private readonly jobs: JobsService) {}
 
   @Cron('0 2 * * *')
-  async runTeamRatings(): Promise<void> {
-    await this.jobs.runPipeline('team-ratings', TEAM_RATINGS_PIPELINE);
+  async runRatings(): Promise<void> {
+    await this.jobs.runPipeline('ratings', RATINGS_PIPELINE);
   }
 
   @Cron(CronExpression.EVERY_DAY_AT_4AM)

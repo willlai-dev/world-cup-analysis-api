@@ -3,8 +3,8 @@ import {
   FULL_PIPELINE,
   JobsScheduler,
   PLAYER_STATUS_PIPELINE,
+  RATINGS_PIPELINE,
   REFRESH_PIPELINE,
-  TEAM_RATINGS_PIPELINE,
 } from './jobs.scheduler';
 
 /** Each cron slot delegates to JobsService.runPipeline with its label + pipeline. */
@@ -13,17 +13,20 @@ describe('JobsScheduler', () => {
     runPipeline: jest.fn().mockResolvedValue({ started: true, results: [] }),
   });
 
-  it('02:00 slot delegates the team-ratings pipeline', async () => {
+  it('02:00 slot delegates the ratings pipeline (player before team)', async () => {
     const jobs = makeJobs();
-    await new JobsScheduler(jobs as unknown as JobsService).runTeamRatings();
-    expect(jobs.runPipeline).toHaveBeenCalledWith('team-ratings', TEAM_RATINGS_PIPELINE);
+    await new JobsScheduler(jobs as unknown as JobsService).runRatings();
+    expect(jobs.runPipeline).toHaveBeenCalledWith('ratings', RATINGS_PIPELINE);
+    // Team score reads the squad's player scores, so player ratings must run first.
+    expect(RATINGS_PIPELINE).toEqual(['GENERATE_PLAYER_RATINGS', 'GENERATE_TEAM_RATINGS']);
   });
 
   it('04:00 slot delegates the full pipeline in order', async () => {
     const jobs = makeJobs();
     await new JobsScheduler(jobs as unknown as JobsService).runFullPipeline();
     expect(jobs.runPipeline).toHaveBeenCalledWith('full', FULL_PIPELINE);
-    // Guard against silent reordering of the 04:00 pipeline.
+    // Guard against silent reordering of the 04:00 pipeline. Player/team ratings are
+    // NOT here — they run at 02:00 so champion predictions rank by fresh team scores.
     expect(FULL_PIPELINE).toEqual([
       'SYNC_TEAMS',
       'SYNC_PLAYERS',
@@ -32,10 +35,11 @@ describe('JobsScheduler', () => {
       'FETCH_NEWS',
       'GENERATE_NEWS_SUMMARY',
       'GENERATE_NEWS_IMPACT',
-      'GENERATE_PLAYER_RATINGS',
       'GENERATE_MATCH_ANALYSIS',
       'GENERATE_CHAMPION_PREDICTIONS',
     ]);
+    expect(FULL_PIPELINE).not.toContain('GENERATE_PLAYER_RATINGS');
+    expect(FULL_PIPELINE).not.toContain('GENERATE_TEAM_RATINGS');
   });
 
   it('12:00 slot delegates the midday refresh (no player sync/ratings)', async () => {

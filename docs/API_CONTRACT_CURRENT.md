@@ -891,9 +891,11 @@ the **JWT admin cookie** (not the cron secret) and are gated by `AdminOnlyGuard`
   `generate-match-analysis` / `generate-champion-predictions` (via AiRouter; skip-if-unchanged via
   `sourceSnapshotHash`; bounded at 200/run; `PROGRAM_RULE` reports under `AI_MOCK_MODE`; real-mode
   inter-call throttle).
-- Scheduler is implemented (`@nestjs/schedule`, `jobs/jobs.scheduler.ts`): **02:00 team-ratings pass**
-  (before the main pipeline so champion prediction ranks on fresh team scores), **04:00 full pipeline**
-  (all sync + all generate, incl. news impact), **06:00 player-status pass** (staggered so the day's
+- Scheduler is implemented (`@nestjs/schedule`, `jobs/jobs.scheduler.ts`): **02:00 ratings pass**
+  (player ratings → team ratings, since team scores read the squad's player scores; runs before the
+  main pipeline so champion prediction ranks on fresh team scores), **04:00 full pipeline**
+  (all sync + news/match/champion generate, incl. news impact; ratings are NOT re-run here),
+  **06:00 player-status pass** (staggered so the day's
   news is tagged first and NVIDIA isn't hammered concurrently), and **12:00 midday refresh**
   (fixtures/results/news + news-impact/match/champion generation, no team/player sync or player
   ratings) — slots are staggered because source data can lag. Manual `/api/jobs/*` still works.

@@ -844,11 +844,19 @@ the **JWT admin cookie** (not the cron secret) and are gated by `AdminOnlyGuard`
 (non-ADMIN → `403 FORBIDDEN`).
 
 - `POST /api/admin/jobs/run` → **`202 Accepted`**. Body (all optional):
-  - `pipeline`: `"FULL" | "SYNC" | "GENERATE"` (default `"FULL"`).
+  - `pipeline`: 預設 `"FULL"`。**全量**：`"FULL"` / `"SYNC"` / `"GENERATE"`；**分領域**（各含該領域
+    抓取 + 該領域 AI 分析，可單獨更新）：`"TEAMS"` / `"PLAYERS"` / `"MATCHES"` / `"NEWS"` / `"CHAMPION"`。
     - `FULL` = 抓 teams/players/fixtures/results/news → 產生 news 摘要+影響、球員評分、**球隊評分**、球員近況、賽事分析、冠軍預測 (完整依賴順序，含 team-ratings 與 player-status，兩者在 cron 是獨立時段)。
-    - `SYNC` = 只抓四項資料 + 新聞 (不花 AI 額度)。
-    - `GENERATE` = 只跑 AI 生成 (資料已存在時重算)。
-  - `jobs`: `JobType[]` — 指定要跑的工作(依陣列順序)，**優先於** `pipeline`，用於精準重跑。
+    - `SYNC` = 只抓五項資料 (teams/players/fixtures/results/news)，**不花 AI 額度**。
+    - `GENERATE` = 只跑**全部** AI 生成 (資料已存在時重算)。
+    - `TEAMS`（國家/球隊）= `SYNC_TEAMS` → `GENERATE_TEAM_RATINGS`。
+    - `PLAYERS`（球員）= `SYNC_PLAYERS` → `GENERATE_PLAYER_RATINGS` → `GENERATE_PLAYER_STATUS`。
+    - `MATCHES`（賽事）= `SYNC_FIXTURES` → `SYNC_RESULTS` → `GENERATE_MATCH_ANALYSIS`。
+    - `NEWS`（新聞）= `FETCH_NEWS` → `GENERATE_NEWS_SUMMARY` → `GENERATE_NEWS_IMPACT`。
+    - `CHAMPION`（冠軍預測）= `GENERATE_CHAMPION_PREDICTIONS`（以現有球隊評分計算；建議先跑 `TEAMS`）。
+    - 建議依賴順序：`PLAYERS` → `TEAMS` → `CHAMPION`（球隊評分吃球員分數、冠軍排名吃球隊 championScore）。
+  - `jobs`: `JobType[]` — 指定要跑的工作(依陣列順序)，**優先於** `pipeline`，用於精準重跑
+    （例如只重算 `["GENERATE_TEAM_RATINGS"]` 而不重抓資料）。
   - Response: `{ started: true, label, jobTypes: JobType[] }`. The pipeline runs **in the
     background**; the request returns immediately.
   - Shares the scheduler's reentrancy guard: if a cron slot or another manual run is in

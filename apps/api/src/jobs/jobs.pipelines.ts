@@ -36,7 +36,7 @@ export const PIPELINE_PRESETS = {
     JobType.SYNC_RESULTS,
     JobType.FETCH_NEWS,
   ],
-  /** AI only — (re)generate ratings/analysis over already-synced data. */
+  /** AI only — (re)generate every rating/analysis over already-synced data. */
   GENERATE: [
     JobType.GENERATE_NEWS_SUMMARY,
     JobType.GENERATE_NEWS_IMPACT,
@@ -46,6 +46,35 @@ export const PIPELINE_PRESETS = {
     JobType.GENERATE_MATCH_ANALYSIS,
     JobType.GENERATE_CHAMPION_PREDICTIONS,
   ],
+
+  // ── Per-domain presets ────────────────────────────────────────────────────
+  // One "update this domain" action = fetch that domain's data, then run its AI
+  // analysis. Let the admin refresh 國家 / 球員 / 賽事 / 新聞 / 冠軍 independently
+  // instead of the whole FULL pipeline. (For AI-only re-runs without re-fetching,
+  // pass an explicit `jobs[]`, e.g. ["GENERATE_TEAM_RATINGS"].)
+
+  /** 國家／球隊：抓球隊 → 球隊實力評分。 */
+  TEAMS: [JobType.SYNC_TEAMS, JobType.GENERATE_TEAM_RATINGS],
+  /** 球員：抓球員 → 六邊形評分 → 近況／傷病。 */
+  PLAYERS: [
+    JobType.SYNC_PLAYERS,
+    JobType.GENERATE_PLAYER_RATINGS,
+    JobType.GENERATE_PLAYER_STATUS,
+  ],
+  /** 賽事：抓賽程＋比分 → 賽前分析。 */
+  MATCHES: [
+    JobType.SYNC_FIXTURES,
+    JobType.SYNC_RESULTS,
+    JobType.GENERATE_MATCH_ANALYSIS,
+  ],
+  /** 新聞：抓新聞 → 摘要／分類／標籤 → 影響分析。 */
+  NEWS: [
+    JobType.FETCH_NEWS,
+    JobType.GENERATE_NEWS_SUMMARY,
+    JobType.GENERATE_NEWS_IMPACT,
+  ],
+  /** 冠軍預測：以現有球隊評分產生 A/B/final run（建議先跑 TEAMS）。 */
+  CHAMPION: [JobType.GENERATE_CHAMPION_PREDICTIONS],
 } as const satisfies Record<string, JobType[]>;
 
 export type PipelinePreset = keyof typeof PIPELINE_PRESETS;

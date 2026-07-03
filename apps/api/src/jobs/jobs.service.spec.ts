@@ -111,6 +111,50 @@ describe('JobsService.startPipeline', () => {
   });
 });
 
+describe('JobsService.listTeamsForPicker', () => {
+  it('returns id + names + fifaCode, non-eliminated first then alphabetical', async () => {
+    const rows = [
+      { id: 'team-arg', nameEn: 'Argentina', nameZh: '阿根廷', fifaCode: 'ARG' },
+      { id: 'team-fra', nameEn: 'France', nameZh: '法國', fifaCode: 'FRA' },
+    ];
+    const findMany = jest.fn().mockResolvedValue(rows);
+    const service = makeService({ team: { findMany } });
+
+    const result = await service.listTeamsForPicker();
+
+    expect(result).toBe(rows);
+    expect(findMany).toHaveBeenCalledWith({
+      select: { id: true, nameEn: true, nameZh: true, fifaCode: true },
+      orderBy: [{ isEliminated: 'asc' }, { nameEn: 'asc' }],
+    });
+  });
+});
+
+describe('JobsService.reapOrphanRuns', () => {
+  it('marks RUNNING/PENDING runs FAILED and returns the count', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 2 });
+    const service = makeService({ jobRun: { updateMany } });
+
+    const count = await service.reapOrphanRuns();
+
+    expect(count).toBe(2);
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    const arg = updateMany.mock.calls[0][0];
+    expect(arg.where).toEqual({ status: { in: ['RUNNING', 'PENDING'] } });
+    expect(arg.data.status).toBe('FAILED');
+    expect(arg.data.completedAt).toBeInstanceOf(Date);
+  });
+
+  it('reaps orphans on module init', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const service = makeService({ jobRun: { updateMany } });
+
+    await service.onModuleInit();
+
+    expect(updateMany).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('JobsService.listRuns', () => {
   it('maps rows to JobResult and filters by jobType', async () => {
     const findMany = jest.fn().mockResolvedValue([
@@ -153,5 +197,94 @@ describe('JobsService.listRuns', () => {
       orderBy: { createdAt: 'desc' },
       take: 50,
     });
+  });
+});
+
+describe('JobsService.runTeamPipeline', () => {
+  const gen = (scope: string) => ({ scope, scanned: 1, generated: 1, skipped: 0, failed: 0 });
+
+  /** Build a service with just the deps a scoped team run touches + a JobRun stub. */
+  function makeTeamService() {
+    const rows = new Map<string, Record<string, unknown>>();
+    const jobRun = {
+      create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const id = `run-${rows.size}`;
+        const row = { id, completedAt: null, metadata: null, ...data };
+        rows.set(id, row);
+        return row;
+      }),
+      update: jest.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+        const row = { ...rows.get(where.id), ...data };
+        rows.set(where.id, row);
+        return row;
+      }),
+    };
+    const playerSync = { run: jest.fn().mockResolvedValue({ source: 'football-data', fetched: 0 }) };
+    const players = {
+      generateRatings: jest.fn().mockResolvedValue(gen('players')),
+      generateStatuses: jest.fn().mockResolvedValue(gen('player-status')),
+    };
+    const teams = { generateRatings: jest.fn().mockResolvedValue(gen('teams')) };
+    const u = undefined as never;
+    const service = new JobsService(
+      { jobRun } as never, u, playerSync as never, u, u, u, players as never, u, u, teams as never,
+    );
+    return { service, playerSync, players, teams };
+  }
+
+  it('runs scoped squad sync → player ratings → team rating → player status', async () => {
+    const { service, playerSync, players, teams } = makeTeamService();
+
+    const res = await service.runTeamPipeline('team-1', { sync: true });
+
+    expect(res.started).toBe(true);
+    expect(res.results.map((r) => r.jobType)).toEqual([
+      'SYNC_PLAYERS',
+      'GENERATE_PLAYER_RATINGS',
+      'GENERATE_TEAM_RATINGS',
+      'GENERATE_PLAYER_STATUS',
+    ]);
+    // every step is scoped to the one team...
+    expect(playerSync.run).toHaveBeenCalledWith({ teamId: 'team-1' });
+    expect(players.generateRatings).toHaveBeenCalledWith({ teamId: 'team-1' });
+    expect(teams.generateRatings).toHaveBeenCalledWith({ teamId: 'team-1' });
+    expect(players.generateStatuses).toHaveBeenCalledWith({ teamId: 'team-1' });
+    // ...and tagged with teamId in the JobRun metadata for listRuns
+    expect((res.results[1].metadata as { teamId?: string }).teamId).toBe('team-1');
+    expect(service.pipelineInProgress).toBe(false);
+  });
+
+  it('skips the squad sync when sync=false', async () => {
+    const { service, playerSync } = makeTeamService();
+
+    const res = await service.runTeamPipeline('team-1', { sync: false });
+
+    expect(res.results.map((r) => r.jobType)).toEqual([
+      'GENERATE_PLAYER_RATINGS',
+      'GENERATE_TEAM_RATINGS',
+      'GENERATE_PLAYER_STATUS',
+    ]);
+    expect(playerSync.run).not.toHaveBeenCalled();
+  });
+
+  it('does not start while another pipeline holds the shared guard', async () => {
+    const { service, players } = makeTeamService();
+    let release: () => void = () => {};
+    jest
+      .spyOn(service, 'run')
+      .mockImplementation(() => new Promise((res) => {
+        release = () => res({} as never);
+      }));
+
+    const first = service.runPipeline('full', ['SYNC_TEAMS'] as never);
+    expect(service.pipelineInProgress).toBe(true);
+
+    const res = await service.runTeamPipeline('team-1');
+    expect(res.started).toBe(false);
+    expect(res.results).toHaveLength(0);
+    expect(players.generateRatings).not.toHaveBeenCalled();
+
+    release();
+    await first;
   });
 });

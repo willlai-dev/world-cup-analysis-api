@@ -6,7 +6,7 @@ import {
   HttpStatus,
   Logger,
 } from '@nestjs/common';
-import type { FastifyReply } from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { ApiError } from '../dto/api-response.types';
 
 const STATUS_CODE_MAP: Record<number, string> = {
@@ -25,7 +25,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
 
   catch(exception: unknown, host: ArgumentsHost): void {
-    const reply = host.switchToHttp().getResponse<FastifyReply>();
+    const httpCtx = host.switchToHttp();
+    const reply = httpCtx.getResponse<FastifyReply>();
+    const req = httpCtx.getRequest<FastifyRequest>();
+    // Prefix that identifies which request blew up, so the stack trace below is
+    // actionable instead of floating context-free in the log.
+    const where = `${req?.method ?? '?'} ${req?.url ?? '?'}`;
 
     let status: number = HttpStatus.INTERNAL_SERVER_ERROR;
     let code = 'INTERNAL_SERVER_ERROR';
@@ -58,9 +63,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
       }
     } else if (exception instanceof Error) {
       message = 'Internal server error';
-      this.logger.error(exception.message, exception.stack);
+      this.logger.error(`${where} :: ${exception.message}`, exception.stack);
     } else {
-      this.logger.error('Unknown exception', String(exception));
+      this.logger.error(`${where} :: unknown exception`, String(exception));
     }
 
     const body: ApiError = { data: null, meta: {}, error: { code, message } };

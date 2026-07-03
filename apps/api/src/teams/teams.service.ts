@@ -158,11 +158,13 @@ export class TeamsService {
    * squad's player ratings + recent results. `runReportIfChanged` skips teams
    * whose squad/results haven't moved since the last run.
    */
-  async generateRatings(): Promise<GenerationResult> {
+  async generateRatings(opts?: { teamId?: string }): Promise<GenerationResult> {
     // Still-in-tournament teams first (isEliminated=false sorts before true), so
     // when the per-run cap is hit the live contenders get scored, not knocked-out
     // sides. Eliminated teams are still refreshed with whatever budget remains.
+    // `opts.teamId` scopes the run to a single country (admin "分析這個國家").
     const teams = await this.prisma.team.findMany({
+      where: opts?.teamId ? { id: opts.teamId } : undefined,
       orderBy: [{ isEliminated: "asc" }, { id: "asc" }],
       select: {
         id: true,

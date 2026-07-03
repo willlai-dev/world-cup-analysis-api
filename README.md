@@ -96,8 +96,8 @@ Every response uses the envelope `{ data, meta?, error }`.
 
 - Global `JwtAuthGuard` (cookie JWT). `@Public()` opts routes out.
 - `AdminOnlyGuard` → ADMIN only (admin controller).
-- `NonAdminUserGuard` → USER/PREMIUM; **ADMIN is 403** on all user-domain APIs.
-- `PremiumOnlyGuard` → PREMIUM only (translate / recalculate / deep-chat).
+- `NonAdminUserGuard` → any authenticated account (USER/PREMIUM/**ADMIN**) on user-domain APIs. Admin is a feature superuser and inherits every general capability.
+- `PremiumOnlyGuard` → PREMIUM **or ADMIN** (translate / recalculate / deep-chat); USER is 403.
 - `CronSecretGuard` → `x-cron-secret` for jobs.
 - DISABLED accounts cannot log in and are rejected (403) on protected routes.
 

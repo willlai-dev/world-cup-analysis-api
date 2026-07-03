@@ -7,6 +7,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { ResponseEnvelopeInterceptor } from './common/interceptors/response-envelope.interceptor';
+import { registerHttpAccessLogger } from './common/logging/http-access-logger';
 import { AppConfigService } from './config/app-config.service';
 
 async function bootstrap(): Promise<void> {
@@ -29,6 +30,9 @@ async function bootstrap(): Promise<void> {
   app.useGlobalFilters(new AllExceptionsFilter());
 
   app.enableCors({ origin: config.frontendUrl, credentials: true });
+
+  // One log line per HTTP request so every frontend call is visible on the backend.
+  registerHttpAccessLogger(app.getHttpAdapter().getInstance());
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('AI World Cup Analyst API')

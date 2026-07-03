@@ -35,13 +35,14 @@ export class PlayerSyncService {
     private readonly client: FootballDataClient,
   ) {}
 
-  async run(): Promise<SyncResult> {
+  async run(opts?: { teamId?: string }): Promise<SyncResult> {
     if (!this.client.hasKey()) {
       return { source: 'football-data', skipped: true, reason: 'FOOTBALL_DATA_API_KEY not configured' };
     }
 
+    // `opts.teamId` scopes the squad sync to a single team (admin per-country refresh).
     const teams = await this.prisma.team.findMany({
-      where: { externalId: { not: null } },
+      where: { externalId: { not: null }, ...(opts?.teamId ? { id: opts.teamId } : {}) },
       select: { id: true, externalId: true },
     });
 

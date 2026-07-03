@@ -31,22 +31,26 @@ describe('AdminOnlyGuard', () => {
 
 describe('PremiumOnlyGuard', () => {
   const guard = new PremiumOnlyGuard();
-  it('allows PREMIUM', () => {
+  it('allows PREMIUM and ADMIN (admin inherits premium capabilities)', () => {
     expect(guard.canActivate(ctx(user(UserRole.PREMIUM)))).toBe(true);
+    expect(guard.canActivate(ctx(user(UserRole.ADMIN)))).toBe(true);
   });
-  it('forbids USER and ADMIN', () => {
+  it('forbids USER', () => {
     expect(() => guard.canActivate(ctx(user(UserRole.USER)))).toThrow(ForbiddenException);
-    expect(() => guard.canActivate(ctx(user(UserRole.ADMIN)))).toThrow(ForbiddenException);
+  });
+  it('401 when unauthenticated', () => {
+    expect(() => guard.canActivate(ctx(undefined))).toThrow(UnauthorizedException);
   });
 });
 
 describe('NonAdminUserGuard', () => {
   const guard = new NonAdminUserGuard();
-  it('allows USER and PREMIUM', () => {
+  it('allows USER, PREMIUM and ADMIN (admin is a feature superuser)', () => {
     expect(guard.canActivate(ctx(user(UserRole.USER)))).toBe(true);
     expect(guard.canActivate(ctx(user(UserRole.PREMIUM)))).toBe(true);
+    expect(guard.canActivate(ctx(user(UserRole.ADMIN)))).toBe(true);
   });
-  it('forbids ADMIN', () => {
-    expect(() => guard.canActivate(ctx(user(UserRole.ADMIN)))).toThrow(ForbiddenException);
+  it('401 when unauthenticated', () => {
+    expect(() => guard.canActivate(ctx(undefined))).toThrow(UnauthorizedException);
   });
 });

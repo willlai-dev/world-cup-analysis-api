@@ -10,9 +10,10 @@ import type { FastifyRequest } from 'fastify';
 import type { AuthenticatedUser } from '../types/authenticated-user';
 
 /**
- * PREMIUM only — used on translate / recalculate / deep-chat. Stacks on top of
- * a class-level NonAdminUserGuard: ADMIN fails the class guard, USER fails here,
- * PREMIUM passes both.
+ * PREMIUM-tier gate — used on translate / recalculate / deep-chat. Stacks on top
+ * of the class-level NonAdminUserGuard. PREMIUM passes; ADMIN also passes (admin
+ * is a feature superuser and inherits all premium capabilities); USER is
+ * forbidden (403).
  */
 @Injectable()
 export class PremiumOnlyGuard implements CanActivate {
@@ -23,7 +24,7 @@ export class PremiumOnlyGuard implements CanActivate {
     if (!user) {
       throw new UnauthorizedException({ code: 'UNAUTHORIZED', message: 'Authentication required' });
     }
-    if (user.role !== UserRole.PREMIUM) {
+    if (user.role !== UserRole.PREMIUM && user.role !== UserRole.ADMIN) {
       throw new ForbiddenException({
         code: 'FORBIDDEN',
         message: '此功能僅限高級會員使用。',

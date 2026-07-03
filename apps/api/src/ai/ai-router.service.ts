@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { type AiEntityType, AiProvider, type AiReportStatus, Prisma } from '@prisma/client';
 import type { ZodType, ZodTypeDef } from 'zod';
 import type { ChatAnswerDto, ChatTurn } from '../common/dto/contracts';
@@ -85,6 +85,8 @@ type ResolvedSlot = { provider: ProviderName; model: string; adapter: AiProvider
  */
 @Injectable()
 export class AiRouterService {
+  private readonly logger = new Logger(AiRouterService.name);
+
   constructor(
     private readonly config: AppConfigService,
     private readonly prisma: PrismaService,
@@ -400,6 +402,9 @@ export class AiRouterService {
           if (!validation.ok) {
             lastError = validation.error;
             lastContent = response.content;
+            this.logger.warn(
+              `${input.taskType} ${provider}/${model} output failed schema validation: ${validation.error}`,
+            );
             await this.usage.log({
               userId: input.userId,
               provider,
@@ -427,6 +432,7 @@ export class AiRouterService {
             ? err
             : new AiProviderError(provider, model, 'NETWORK', (err as Error).message);
         lastError = e.message;
+        this.logger.warn(`${input.taskType} ${provider}/${model} attempt failed: ${e.message}`);
         await this.usage.log({
           userId: input.userId,
           provider,
@@ -441,6 +447,8 @@ export class AiRouterService {
       }
     }
 
+    // Every configured slot failed — the caller will now graceful-degrade.
+    this.logger.error(`${input.taskType} exhausted all providers: ${lastError}`);
     return { ok: false, lastError, lastContent };
   }
 

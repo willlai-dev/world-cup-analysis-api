@@ -84,9 +84,9 @@ export class QuotaService {
     const { start, resetAt } = startOfDay();
     const limit =
       key === 'GENERAL_CHAT'
-        ? role === UserRole.PREMIUM
-          ? quota.generalChatPremiumPerDay
-          : quota.generalChatUserPerDay
+        ? role === UserRole.USER
+          ? quota.generalChatUserPerDay
+          : quota.generalChatPremiumPerDay // PREMIUM and ADMIN share the premium tier
         : key === 'DEEP_CHAT'
           ? quota.deepChatPerDay
           : quota.newsTranslationPerDay;

@@ -73,6 +73,16 @@ describe('QuotaService', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('applies the PREMIUM limit for ADMIN on GENERAL_CHAT (feature superuser)', async () => {
+    const { service, prisma } = build();
+    // Above the USER limit (2) but below the PREMIUM limit (5): admin shares the premium tier.
+    prisma.aiUsageLog.count.mockResolvedValue(4);
+
+    await expect(
+      service.assertWithinQuota(user(UserRole.ADMIN), 'GENERAL_CHAT'),
+    ).resolves.toBeUndefined();
+  });
+
   it('counts only DONE rows since local midnight for daily buckets', async () => {
     const { service, prisma } = build();
     await service.assertWithinQuota(user(), 'GENERAL_CHAT');

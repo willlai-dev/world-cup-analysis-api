@@ -808,6 +808,8 @@ All `/api/jobs/*` routes are `@Public()` but protected by `CronSecretGuard`.
   `generate-news-impact` (Phase 3：對近 7 天已摘要且帶 TEAM/PLAYER 標籤的新聞產生謹慎語氣影響分析 → `AiReport(NEWS/NEWS_IMPACT)`),
   `generate-team-ratings` (對**全部**球隊產生隊伍實力評分 `championScore/attackScore/midfieldScore/defenseScore/statusScore/formScore` + `ratingTier` → 寫回 `Team` + 存 `AiReport(TEAM/TEAM_SQUAD_ANALYSIS)`；以球員名單評分 + 近期賽果為據，真實模式用公開知識補足；先前僅 6 支種子隊有分數，此 job 補齊其餘 42 支),
   `generate-player-ratings` (六邊形評分 → `AiReport`，真實模式另寫回 `Player` 分數),
+  ※ `generate-team-ratings` 與 `generate-player-ratings` 皆**優先處理尚未淘汰**的球隊／球員
+  (`isEliminated=false` 先排序)，確保單次 200 筆上限先用在仍在賽的隊伍，已淘汰者用剩餘額度補;
   `generate-player-status` (Phase 3：對在賽隊伍每隊前 `PLAYER_STATUS_TOP_N`(15) 名球員,依近 7 天標籤新聞 + 該隊近 5 場結果產生近況/傷病摘要 → `AiReport(PLAYER/PLAYER_STATUS_SUMMARY)`，真實模式寫回 `injuryRiskLevel`/`formScore`),
   `generate-match-analysis` (賽前分析 → `AiReport`，供 `/analysis` 與 `/prediction`；**僅產生未開賽 `SCHEDULED` 的比賽**，含三種最可能比分),
   `generate-champion-predictions` (SYSTEM 觸發的 A/B/final run)。各任務以 `AiReport.sourceSnapshotHash`
@@ -833,6 +835,27 @@ Current implemented routes:
 Failure note:
 
 - Missing or wrong `x-cron-secret` returns `401 UNAUTHORIZED` with message `Invalid or missing cron secret`.
+
+### 6.2.1 Admin manual trigger (ADMIN cookie)
+
+For bootstrapping an empty production DB (or forcing a refresh) without waiting for
+the cron slots, admins can start a whole pipeline from the dashboard. These routes use
+the **JWT admin cookie** (not the cron secret) and are gated by `AdminOnlyGuard`
+(non-ADMIN → `403 FORBIDDEN`).
+
+- `POST /api/admin/jobs/run` → **`202 Accepted`**. Body (all optional):
+  - `pipeline`: `"FULL" | "SYNC" | "GENERATE"` (default `"FULL"`).
+    - `FULL` = 抓 teams/players/fixtures/results/news → 產生 news 摘要+影響、球員評分、**球隊評分**、球員近況、賽事分析、冠軍預測 (完整依賴順序，含 team-ratings 與 player-status，兩者在 cron 是獨立時段)。
+    - `SYNC` = 只抓四項資料 + 新聞 (不花 AI 額度)。
+    - `GENERATE` = 只跑 AI 生成 (資料已存在時重算)。
+  - `jobs`: `JobType[]` — 指定要跑的工作(依陣列順序)，**優先於** `pipeline`，用於精準重跑。
+  - Response: `{ started: true, label, jobTypes: JobType[] }`. The pipeline runs **in the
+    background**; the request returns immediately.
+  - Shares the scheduler's reentrancy guard: if a cron slot or another manual run is in
+    progress, returns **`409 PIPELINE_RUNNING`** (does not queue).
+- `GET /api/admin/jobs/runs?limit=50&jobType=SYNC_TEAMS` → recent `JobRun` rows (newest
+  first) as `JobResult[]`, so the dashboard can poll pipeline progress/results. `limit`
+  1–200 (default 50); `jobType` optional filter.
 
 ### 6.3 API Documentation Routes
 
@@ -866,6 +889,11 @@ Failure note:
   news is tagged first and NVIDIA isn't hammered concurrently), and **12:00 midday refresh**
   (fixtures/results/news + news-impact/match/champion generation, no team/player sync or player
   ratings) — slots are staggered because source data can lag. Manual `/api/jobs/*` still works.
+  Cron slots and the admin manual trigger share one reentrancy guard in `JobsService`, so they
+  never overlap. `generate-team-ratings` / `generate-player-ratings` order **non-eliminated first**.
+- Admin manual pipeline trigger is implemented (`jobs/admin-jobs.controller.ts`, `AdminOnlyGuard`):
+  `POST /api/admin/jobs/run` (background, `202`; `FULL`/`SYNC`/`GENERATE` presets or explicit `jobs[]`;
+  `409 PIPELINE_RUNNING` while busy) + `GET /api/admin/jobs/runs` (recent `JobRun`s) — see §6.2.1.
 - Team `nameZh` is now populated for synced teams via `sources/football-data/country-names.ts`
   (fifaCode → 繁中); frontend can display Chinese names.
 - Not yet implemented: group-stage (non-knockout) elimination derivation.
@@ -894,6 +922,7 @@ These are the concrete `error.code` values currently thrown in application code.
 - `LAST_ADMIN_PROTECTED`
 - `DB_UNAVAILABLE`
 - `AI_QUOTA_EXCEEDED`
+- `PIPELINE_RUNNING` (409, from `POST /api/admin/jobs/run` when a sync/generate pipeline is already in progress)
 
 Frontend handling guidance:
 

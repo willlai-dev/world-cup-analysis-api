@@ -1,15 +1,30 @@
-import { JobsScheduler } from './jobs.scheduler';
 import type { JobsService } from './jobs.service';
+import {
+  FULL_PIPELINE,
+  JobsScheduler,
+  PLAYER_STATUS_PIPELINE,
+  REFRESH_PIPELINE,
+  TEAM_RATINGS_PIPELINE,
+} from './jobs.scheduler';
 
+/** Each cron slot delegates to JobsService.runPipeline with its label + pipeline. */
 describe('JobsScheduler', () => {
-  it('runs the full sync + generate pipeline in order', async () => {
-    const run = jest.fn().mockResolvedValue({ status: 'DONE' });
-    const scheduler = new JobsScheduler({ run } as unknown as JobsService);
+  const makeJobs = () => ({
+    runPipeline: jest.fn().mockResolvedValue({ started: true, results: [] }),
+  });
 
-    await scheduler.runFullPipeline();
+  it('02:00 slot delegates the team-ratings pipeline', async () => {
+    const jobs = makeJobs();
+    await new JobsScheduler(jobs as unknown as JobsService).runTeamRatings();
+    expect(jobs.runPipeline).toHaveBeenCalledWith('team-ratings', TEAM_RATINGS_PIPELINE);
+  });
 
-    const order = run.mock.calls.map((c) => c[0]);
-    expect(order).toEqual([
+  it('04:00 slot delegates the full pipeline in order', async () => {
+    const jobs = makeJobs();
+    await new JobsScheduler(jobs as unknown as JobsService).runFullPipeline();
+    expect(jobs.runPipeline).toHaveBeenCalledWith('full', FULL_PIPELINE);
+    // Guard against silent reordering of the 04:00 pipeline.
+    expect(FULL_PIPELINE).toEqual([
       'SYNC_TEAMS',
       'SYNC_PLAYERS',
       'SYNC_FIXTURES',
@@ -23,74 +38,18 @@ describe('JobsScheduler', () => {
     ]);
   });
 
-  it('midday refresh syncs fixtures/results/news + regenerates match & champion (no player sync/ratings)', async () => {
-    const run = jest.fn().mockResolvedValue({ status: 'DONE' });
-    const scheduler = new JobsScheduler({ run } as unknown as JobsService);
-
-    await scheduler.runMiddayRefresh();
-
-    const order = run.mock.calls.map((c) => c[0]);
-    expect(order).toEqual([
-      'SYNC_FIXTURES',
-      'SYNC_RESULTS',
-      'FETCH_NEWS',
-      'GENERATE_NEWS_SUMMARY',
-      'GENERATE_NEWS_IMPACT',
-      'GENERATE_MATCH_ANALYSIS',
-      'GENERATE_CHAMPION_PREDICTIONS',
-    ]);
-    expect(order).not.toContain('SYNC_PLAYERS');
-    expect(order).not.toContain('GENERATE_PLAYER_RATINGS');
+  it('12:00 slot delegates the midday refresh (no player sync/ratings)', async () => {
+    const jobs = makeJobs();
+    await new JobsScheduler(jobs as unknown as JobsService).runMiddayRefresh();
+    expect(jobs.runPipeline).toHaveBeenCalledWith('midday-refresh', REFRESH_PIPELINE);
+    expect(REFRESH_PIPELINE).not.toContain('SYNC_PLAYERS');
+    expect(REFRESH_PIPELINE).not.toContain('GENERATE_PLAYER_RATINGS');
   });
 
-  it('06:00 slot runs only the player-status job (staggered from the main pipeline)', async () => {
-    const run = jest.fn().mockResolvedValue({ status: 'DONE' });
-    const scheduler = new JobsScheduler({ run } as unknown as JobsService);
-
-    await scheduler.runPlayerStatus();
-
-    expect(run.mock.calls.map((c) => c[0])).toEqual(['GENERATE_PLAYER_STATUS']);
-  });
-
-  it('02:00 slot runs only the team-ratings job (before the 04:00 pipeline)', async () => {
-    const run = jest.fn().mockResolvedValue({ status: 'DONE' });
-    const scheduler = new JobsScheduler({ run } as unknown as JobsService);
-
-    await scheduler.runTeamRatings();
-
-    expect(run.mock.calls.map((c) => c[0])).toEqual(['GENERATE_TEAM_RATINGS']);
-  });
-
-  it('continues the pipeline even if one job throws', async () => {
-    const run = jest
-      .fn()
-      .mockResolvedValueOnce({ status: 'DONE' }) // SYNC_TEAMS
-      .mockRejectedValueOnce(new Error('boom')) // SYNC_PLAYERS
-      .mockResolvedValue({ status: 'DONE' });
-    const scheduler = new JobsScheduler({ run } as unknown as JobsService);
-
-    await scheduler.runFullPipeline();
-
-    expect(run).toHaveBeenCalledTimes(10);
-  });
-
-  it('skips a tick when a previous run is still in progress', async () => {
-    let resolveFirst: () => void = () => {};
-    const run = jest
-      .fn()
-      .mockImplementationOnce(
-        () => new Promise((res) => {
-          resolveFirst = () => res({ status: 'DONE' });
-        }),
-      )
-      .mockResolvedValue({ status: 'DONE' });
-    const scheduler = new JobsScheduler({ run } as unknown as JobsService);
-
-    const first = scheduler.runFullPipeline(); // hangs on first job
-    await scheduler.runFullPipeline(); // should skip (guard)
-    expect(run).toHaveBeenCalledTimes(1);
-
-    resolveFirst();
-    await first;
+  it('06:00 slot delegates only the player-status pipeline', async () => {
+    const jobs = makeJobs();
+    await new JobsScheduler(jobs as unknown as JobsService).runPlayerStatus();
+    expect(jobs.runPipeline).toHaveBeenCalledWith('player-status', PLAYER_STATUS_PIPELINE);
+    expect(PLAYER_STATUS_PIPELINE).toEqual(['GENERATE_PLAYER_STATUS']);
   });
 });

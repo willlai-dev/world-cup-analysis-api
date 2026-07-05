@@ -107,11 +107,13 @@ describe("AI World Cup Analyst API (e2e)", () => {
     expect(res.body.meta.pagination).toBeDefined();
   });
 
-  it("8. ADMIN GET /api/matches -> 403 (admin blocked from user APIs)", async () => {
+  it("8. ADMIN GET /api/matches -> 200 (admin is a feature superuser)", async () => {
     const res = await request(http)
       .get("/api/matches")
       .set("Cookie", adminCookie);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.meta.pagination).toBeDefined();
   });
 
   it("9. USER POST /api/news/:id/translate -> 403", async () => {
@@ -191,12 +193,13 @@ describe("AI World Cup Analyst API (e2e)", () => {
     expect(matching).toHaveLength(1);
   });
 
-  it("Admin cannot use AI chat (NonAdminUserGuard) -> 403", async () => {
+  it("Admin can use AI chat (feature superuser) -> 201 (mock)", async () => {
     const res = await request(http)
       .post("/api/ai/chat")
       .set("Cookie", adminCookie)
       .send({ question: "誰是奪冠熱門？" });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(201);
+    expect(res.body.data.provider).toBe("PROGRAM_RULE");
   });
 
   it("USER can use AI chat -> 200 (mock)", async () => {
@@ -233,12 +236,16 @@ describe("AI World Cup Analyst API (e2e)", () => {
     expect(res.body.error.code).toBe("UNAUTHORIZED");
   });
 
-  it("17. ADMIN POST /api/matches/:id/refresh -> 403", async () => {
+  it("17. ADMIN POST /api/matches/:id/refresh -> 201 (admin is a feature superuser)", async () => {
+    // Uses seed-match-6 so it does not touch the seed-match-2 cooldown state
+    // exercised by tests 18/19. No API key in test env => graceful skip.
     const res = await request(http)
-      .post("/api/matches/seed-match-2/refresh")
+      .post("/api/matches/seed-match-6/refresh")
       .set("Cookie", adminCookie);
-    expect(res.status).toBe(403);
-    expect(res.body.error.code).toBe("FORBIDDEN");
+    expect(res.status).toBe(201);
+    expect(res.body.error).toBeNull();
+    expect(res.body.data.id).toBe("seed-match-6");
+    expect(res.body.meta.refresh.status).toBe("SKIPPED_NO_SOURCE");
   });
 
   it("18. USER POST /api/matches/:id/refresh (no API key) -> 201 with SKIPPED_NO_SOURCE", async () => {
@@ -424,5 +431,44 @@ describe("AI World Cup Analyst API (e2e)", () => {
       .get("/api/admin/jobs/runs")
       .set("Cookie", userCookie);
     expect(forbidden.status).toBe(403);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Per-country manual trigger (§6.2.1 run-team)
+  // ---------------------------------------------------------------------------
+
+  it("31. Non-admin POST /api/admin/jobs/run-team/:id -> 403 FORBIDDEN", async () => {
+    const res = await request(http)
+      .post(`/api/admin/jobs/run-team/${SEED_TEAM_ID}`)
+      .set("Cookie", userCookie)
+      .send({ sync: false });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("FORBIDDEN");
+  });
+
+  it("32. ADMIN POST run-team for unknown team -> 404 NOT_FOUND", async () => {
+    const res = await request(http)
+      .post("/api/admin/jobs/run-team/does-not-exist")
+      .set("Cookie", adminCookie)
+      .send({ sync: false });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("NOT_FOUND");
+  });
+
+  it("33. ADMIN POST run-team -> 202 (scoped background, sync:false)", async () => {
+    const res = await request(http)
+      .post(`/api/admin/jobs/run-team/${SEED_TEAM_ID}`)
+      .set("Cookie", adminCookie)
+      .send({ sync: false });
+    expect(res.status).toBe(202);
+    expect(res.body.error).toBeNull();
+    expect(res.body.data.started).toBe(true);
+    expect(res.body.data.teamId).toBe(SEED_TEAM_ID);
+    // sync:false drops SYNC_PLAYERS; player ratings run before the team rating.
+    expect(res.body.data.jobTypes).toEqual([
+      "GENERATE_PLAYER_RATINGS",
+      "GENERATE_TEAM_RATINGS",
+      "GENERATE_PLAYER_STATUS",
+    ]);
   });
 });

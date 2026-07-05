@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { JobType } from '@prisma/client';
 import { JobsService } from './jobs.service';
@@ -64,25 +64,46 @@ export const PLAYER_STATUS_PIPELINE: JobType[] = [JobType.GENERATE_PLAYER_STATUS
  */
 @Injectable()
 export class JobsScheduler {
+  private readonly logger = new Logger(JobsScheduler.name);
+
   constructor(private readonly jobs: JobsService) {}
 
   @Cron('0 2 * * *')
   async runRatings(): Promise<void> {
-    await this.jobs.runPipeline('ratings', RATINGS_PIPELINE);
+    await this.runSlot('ratings', RATINGS_PIPELINE);
   }
 
   @Cron(CronExpression.EVERY_DAY_AT_4AM)
   async runFullPipeline(): Promise<void> {
-    await this.jobs.runPipeline('full', FULL_PIPELINE);
+    await this.runSlot('full', FULL_PIPELINE);
   }
 
   @Cron('0 12 * * *')
   async runMiddayRefresh(): Promise<void> {
-    await this.jobs.runPipeline('midday-refresh', REFRESH_PIPELINE);
+    await this.runSlot('midday-refresh', REFRESH_PIPELINE);
   }
 
   @Cron('0 6 * * *')
   async runPlayerStatus(): Promise<void> {
-    await this.jobs.runPipeline('player-status', PLAYER_STATUS_PIPELINE);
+    await this.runSlot('player-status', PLAYER_STATUS_PIPELINE);
+  }
+
+  /**
+   * Shared wrapper for every cron slot. Logs that the schedule fired (so the log
+   * shows the daily trigger even when the reentrancy guard skips the run) and
+   * catches any error — @nestjs/schedule swallows a rejected cron handler
+   * silently, which would otherwise hide a broken nightly run. runPipeline logs
+   * the per-job lines and the finish summary.
+   */
+  private async runSlot(label: string, pipeline: JobType[]): Promise<void> {
+    this.logger.log(`⏰ Cron "${label}" fired.`);
+    try {
+      const result = await this.jobs.runPipeline(label, pipeline);
+      if (!result.started) {
+        this.logger.warn(`Cron "${label}" skipped — another pipeline was already running.`);
+      }
+    } catch (err) {
+      this.logger.error(`Cron "${label}" crashed: ${(err as Error).message}`, (err as Error).stack);
+    }
   }
 }

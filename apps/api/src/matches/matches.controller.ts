@@ -80,8 +80,7 @@ export class MatchesController {
    * POST /matches/:matchId/refresh
    *
    * User-facing single-match lightweight refresh.
-   * Requires login; USER and PREMIUM may call; ADMIN is blocked (403) by
-   * the class-level NonAdminUserGuard.
+   * Requires login; any authenticated account (USER / PREMIUM / ADMIN) may call.
    * Does NOT require cron-secret or premium tier.
    */
   @Post(":matchId/refresh")

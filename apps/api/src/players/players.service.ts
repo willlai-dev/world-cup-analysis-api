@@ -149,11 +149,13 @@ export class PlayersService {
   }
 
   /** Job: hexagon rating per player — saves an AiReport and (real mode) writes scores back. */
-  async generateRatings(): Promise<GenerationResult> {
+  async generateRatings(opts?: { teamId?: string }): Promise<GenerationResult> {
     // Players on still-in-tournament teams first (team.isEliminated=false sorts
     // before true), so the per-run cap spends the AI budget on live squads before
     // knocked-out ones. Eliminated teams' players get whatever budget remains.
+    // `opts.teamId` scopes the run to a single country's squad.
     const players = await this.prisma.player.findMany({
+      where: opts?.teamId ? { teamId: opts.teamId } : undefined,
       orderBy: [{ team: { isEliminated: "asc" } }, { id: "asc" }],
       select: {
         id: true,
@@ -219,13 +221,15 @@ export class PlayersService {
    * the player's name + the team's recent finished matches; the source hash
    * skips players whose material hasn't changed since the last run.
    */
-  async generateStatuses(): Promise<GenerationResult> {
+  async generateStatuses(opts?: { teamId?: string }): Promise<GenerationResult> {
     const { topN, newsDays } = this.config.playerStatus;
     const since = new Date();
     since.setDate(since.getDate() - newsDays);
 
+    // Scoped to one team when `opts.teamId` is set (admin per-country refresh);
+    // otherwise every still-in-tournament team, top N players each.
     const teams = await this.prisma.team.findMany({
-      where: { isEliminated: false },
+      where: opts?.teamId ? { id: opts.teamId } : { isEliminated: false },
       select: {
         id: true,
         nameEn: true,

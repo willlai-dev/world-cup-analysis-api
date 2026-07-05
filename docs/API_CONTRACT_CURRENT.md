@@ -39,8 +39,8 @@ Additional auth notes:
 - Because auth is cookie-based, browser requests that must send or receive auth state must use `credentials: "include"`.
 - If `GET /api/auth/me` returns `401`, treat the viewer as Guest.
 - If login succeeds, honor `data.redirectPath`. Current backend behavior is `ADMIN -> /admin/accounts`, `USER/PREMIUM -> /matches`.
-- `ADMIN` accounts must not be routed into general user product pages. The backend returns `403` on user-domain APIs guarded by `NonAdminUserGuard`.
-- `USER` accounts must not call PREMIUM-only routes. The backend returns `403` with `error.code = "FORBIDDEN"` on those routes.
+- `ADMIN` accounts are still routed to `/admin/accounts` by default, but ADMIN is now a **feature superuser**: the backend permits ADMIN on every user-domain API (including PREMIUM-only routes such as translate / recalculate / deep-chat / AI chat). The per-endpoint "Access" cells below therefore also allow ADMIN even where they say `USER`/`PREMIUM`.
+- `USER` accounts must not call PREMIUM-only routes. The backend returns `403` with `error.code = "FORBIDDEN"` on those routes (this applies to `USER` only — `PREMIUM` and `ADMIN` pass).
 - Product UI must not call backend-only routes such as `/api/jobs/*`, `/api/health`, `/api/health/db`, `/docs`, and `IMPLEMENTATION_UNCLEAR: /docs-json`.
 - Do not build frontend logic on `error.message`. Messages are mixed Chinese/English and should be treated as display text only. Use `error.code` for programmatic handling.
 - Request validation is strict. Global `ValidationPipe` is configured with `whitelist: true`, `transform: true`, and `forbidNonWhitelisted: true`. Do not send speculative request fields.
@@ -493,7 +493,7 @@ Validation and behavior:
   - `bio` max length `1000`
   - No other writable fields are implemented.
   - `email`, `password`, `role`, and `status` cannot be updated here.
-- `ADMIN` receives `403 FORBIDDEN` on all `/api/users/*` routes.
+- `ADMIN` may also call `/api/users/*` routes (feature superuser); these are no longer admin-blocked.
 
 ### 5.4 Admin
 
@@ -740,13 +740,13 @@ Behavior notes:
 
 | Method | Path           | Status | Access                   | Request                 | Success `data`  |
 | ------ | -------------- | ------ | ------------------------ | ----------------------- | --------------- |
-| POST   | `/api/ai/chat` | 201    | `USER` or `PREMIUM` only | `{ question, history? }` | `ChatAnswerDto` |
+| POST   | `/api/ai/chat` | 201    | `USER`, `PREMIUM` or `ADMIN` | `{ question, history? }` | `ChatAnswerDto` |
 
 Behavior notes:
 
 - `question` length must be `1..1000`.
 - `history?`: optional array of prior conversation turns, oldest→newest, each `{ role: "user" | "assistant", content: string }` (`content` ≤ 2000 chars, array ≤ 20 items). The backend uses only the **last 3 Q&A pairs (6 turns)**; extra turns are trimmed server-side. Frontend keeps and sends the visible chat log — the backend stores no conversation state.
-- `ADMIN` receives `403 FORBIDDEN` here.
+- `ADMIN` may also call this endpoint (feature superuser); admin shares the `PREMIUM` daily quota tier.
 - Routes through the AI router `GENERAL_CHAT` (NVIDIA Super → Qwen Plus) with AI usage logging.
 - Under `AI_MOCK_MODE=false` the answer is **grounded in a DB context** built from the question: intent is classified (match / team / player / news / champion / mixed / unknown), referenced teams/players are matched (recent user turns help resolve references like「他」), and only the relevant tables are queried. When nothing relevant is found the strict Global Skill answers「目前資料不足」. Prior turns are sent to the model with the current question flagged `【本次提問】`.
 - **Entity fixtures bundling:** when a team or player is named, the snapshot also includes that team's fixtures (recent results + upcoming) — so「接下來法國對陣誰 / Mbappe 下一場」are answerable even without a fixture keyword. For general fixture questions (no team named) the snapshot includes recent finished + live + a multi-day list of upcoming `SCHEDULED` matches plus a `now` timestamp, so「未開始 / 今天 / 明天 / 某月某日」can be answered from the snapshot.
@@ -861,6 +861,16 @@ the **JWT admin cookie** (not the cron secret) and are gated by `AdminOnlyGuard`
     background**; the request returns immediately.
   - Shares the scheduler's reentrancy guard: if a cron slot or another manual run is in
     progress, returns **`409 PIPELINE_RUNNING`** (does not queue).
+- `POST /api/admin/jobs/run-team/:teamId` → **`202 Accepted`**. **單獨分析一個國家**：只跑該隊的
+  `GENERATE_PLAYER_RATINGS` → `GENERATE_TEAM_RATINGS` → `GENERATE_PLAYER_STATUS`（球員評分先於球隊評分），
+  全部 scoped 到這個 `teamId`。Body（選填）：`{ "sync"?: boolean }`（預設 `true` = 先抓該隊名單
+  `SYNC_PLAYERS`；`false` = 只用現有資料重算、不呼叫 football-data）。
+  - Response: `{ started: true, teamId, teamName, jobTypes: JobType[] }`（背景執行，立即返回）。
+  - `teamId` 不存在 → **`404 NOT_FOUND`**；有流程在跑 → **`409 PIPELINE_RUNNING`**（共用同一把鎖）。
+  - 每個 JobRun 的 `metadata` 會帶 `teamId`，可在 `runs` 中辨識是哪個國家的 scoped 執行。
+- `GET /api/admin/jobs/teams` → **`200 OK`**. ADMIN-only 精簡球隊清單，供 run-team 選單使用
+  （`GET /api/teams` 僅 USER/PREMIUM 可讀）。Response: `Array<{ id, nameEn, nameZh, fifaCode }>`，
+  未淘汰者在前、再依 `nameEn` 排序。
 - `GET /api/admin/jobs/runs?limit=50&jobType=SYNC_TEAMS` → recent `JobRun` rows (newest
   first) as `JobResult[]`, so the dashboard can poll pipeline progress/results. `limit`
   1–200 (default 50); `jobType` optional filter.

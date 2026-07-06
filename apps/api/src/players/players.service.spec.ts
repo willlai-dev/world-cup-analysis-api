@@ -3,16 +3,16 @@ import type { AppConfigService } from '../config/app-config.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import { PlayersService } from './players.service';
 
-function build() {
+function build(overrides: { aiMockMode?: boolean } = {}) {
   const prisma = {
-    player: { findMany: jest.fn(), update: jest.fn() },
+    player: { findMany: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
     team: { findMany: jest.fn() },
     match: { findMany: jest.fn().mockResolvedValue([]) },
     newsArticle: { findMany: jest.fn().mockResolvedValue([]) },
   };
-  const router = { runReportIfChanged: jest.fn() };
+  const router = { runReportIfChanged: jest.fn(), runReport: jest.fn() };
   const config = {
-    aiMockMode: true,
+    aiMockMode: overrides.aiMockMode ?? true,
     aiGenerationDelayMs: 0,
     playerStatus: { topN: 15, newsDays: 7 },
   } as unknown as AppConfigService;
@@ -76,6 +76,77 @@ describe('PlayersService.generateRatings', () => {
 
     expect(prisma.player.update).not.toHaveBeenCalled();
     expect(result).toMatchObject({ scanned: 1, generated: 0, skipped: 1 });
+  });
+});
+
+describe('PlayersService name translation (via generateRatings)', () => {
+  const missing = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `p${i}`,
+      nameEn: `Player ${i}`,
+      team: { nameEn: 'England', nameZh: '英格蘭' },
+    }));
+
+  it('skips translation entirely in mock mode (no placeholder writes)', async () => {
+    const { service, prisma, router } = build(); // aiMockMode: true
+    prisma.player.findMany.mockResolvedValue([]);
+
+    const result = await service.generateRatings();
+
+    expect(router.runReport).not.toHaveBeenCalled();
+    // Only the ratings query ran — the nameZh selection query is skipped.
+    expect(prisma.player.findMany).toHaveBeenCalledTimes(1);
+    expect(result.nameTranslation).toEqual({ scanned: 0, translated: 0, failed: 0 });
+  });
+
+  it('writes back only CJK results matching a batched id', async () => {
+    const { service, prisma, router } = build({ aiMockMode: false });
+    prisma.player.findMany
+      .mockResolvedValueOnce(missing(2)) // translation selection
+      .mockResolvedValueOnce([]); // ratings loop
+    router.runReport.mockResolvedValue({
+      ok: true,
+      provider: 'QWEN',
+      data: {
+        names: [
+          { id: 'p0', nameZh: '凱恩' },
+          { id: 'p1', nameZh: 'Kane' }, // romanized echo — must be dropped
+          { id: 'zz', nameZh: '不存在' }, // unknown id — must be dropped
+        ],
+      },
+    });
+
+    const result = await service.generateRatings();
+
+    const input = router.runReport.mock.calls[0][0];
+    expect(input).toMatchObject({
+      taskType: 'PLAYER_NAME_TRANSLATION',
+      reportType: 'PLAYER_NAME_TRANSLATION',
+    });
+    expect(input.context.players).toEqual([
+      { id: 'p0', name: 'Player 0', country: '英格蘭' },
+      { id: 'p1', name: 'Player 1', country: '英格蘭' },
+    ]);
+    expect(prisma.player.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.player.updateMany).toHaveBeenCalledWith({
+      where: { id: 'p0' },
+      data: { nameZh: '凱恩' },
+    });
+    expect(result.nameTranslation).toEqual({ scanned: 2, translated: 1, failed: 0 });
+  });
+
+  it('stops after consecutive whole-batch failures (provider down)', async () => {
+    const { service, prisma, router } = build({ aiMockMode: false });
+    prisma.player.findMany
+      .mockResolvedValueOnce(missing(150)) // 3 batches of 50
+      .mockResolvedValueOnce([]);
+    router.runReport.mockResolvedValue({ ok: false, data: null });
+
+    const result = await service.generateRatings();
+
+    expect(router.runReport).toHaveBeenCalledTimes(2); // 3rd batch not attempted
+    expect(prisma.player.updateMany).not.toHaveBeenCalled();
+    expect(result.nameTranslation).toEqual({ scanned: 150, translated: 0, failed: 100 });
   });
 });
 

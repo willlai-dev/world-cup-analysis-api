@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { SyncResult } from '../sync-result';
-import { countryNameZh } from './country-names';
+import { countryConfederation, countryNameZh } from './country-names';
 import { FootballDataClient } from './football-data.client';
 
 /** Syncs World Cup national teams from football-data.org into the Team table. */
@@ -36,6 +36,7 @@ export class TeamSyncService {
         fifaCode,
         nameEn: t.name,
         nameZh: countryNameZh(fifaCode) ?? undefined, // 補中文名(表內有才寫)
+        continent: countryConfederation(fifaCode) ?? undefined, // 補聯會(同上)
         coachName: t.coach?.name ?? undefined,
         flagUrl: t.crest ?? undefined,
       };

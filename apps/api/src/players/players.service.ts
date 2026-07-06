@@ -17,6 +17,10 @@ import {
   PlayerHexagonOutputSchema,
 } from "../ai/schemas/player-hexagon.schema";
 import {
+  type PlayerNameTranslationOutput,
+  PlayerNameTranslationOutputSchema,
+} from "../ai/schemas/player-name-translation.schema";
+import {
   type PlayerStatusOutput,
   PlayerStatusOutputSchema,
 } from "../ai/schemas/player-status.schema";
@@ -52,6 +56,23 @@ const PLAYER_STATUS_MOCK: PlayerStatusOutput = {
   injuryRiskLevel: "UNKNOWN",
   formScore: null,
   dataLimitations: ["示範模式"],
+};
+
+/** Players per PLAYER_NAME_TRANSLATION AI call (id + name + country in, id + 譯名 out). */
+const NAME_TRANSLATION_BATCH_SIZE = 50;
+/** Per-run batch cap — 26 × 50 covers a full 48-squad backfill in a single run. */
+const NAME_TRANSLATION_MAX_BATCHES = 26;
+/** Stop early when the provider looks down (whole batches failing back-to-back). */
+const NAME_TRANSLATION_MAX_CONSECUTIVE_FAILURES = 2;
+/** A returned 譯名 must contain CJK — a romanized echo (e.g. the English name)
+ *  is dropped and the row stays null so a later run retries it. */
+const CJK_RE = /[㐀-鿿]/;
+
+/** Per-run summary of the nameZh backfill; stored in JobRun.metadata. */
+export type NameTranslationResult = {
+  scanned: number;
+  translated: number;
+  failed: number;
 };
 
 const PLAYER_SORT_FIELDS = [
@@ -149,7 +170,14 @@ export class PlayersService {
   }
 
   /** Job: hexagon rating per player — saves an AiReport and (real mode) writes scores back. */
-  async generateRatings(opts?: { teamId?: string }): Promise<GenerationResult> {
+  async generateRatings(
+    opts?: { teamId?: string },
+  ): Promise<GenerationResult & { nameTranslation: NameTranslationResult }> {
+    // 先補中文譯名再評分：資料源(football-data)只有英文名，SYNC_PLAYERS 進來的新
+    // 球員一律缺 nameZh。掛在這裡讓每日 ratings 排程與手動 FULL/GENERATE/PLAYERS/
+    // 單隊管線都會自動補齊，不需要新的 JobType（正式環境不必跑 enum migration）。
+    const nameTranslation = await this.translateMissingNames(opts?.teamId);
+
     // Players on still-in-tournament teams first (team.isEliminated=false sorts
     // before true), so the per-run cap spends the AI budget on live squads before
     // knocked-out ones. Eliminated teams' players get whatever budget remains.
@@ -212,7 +240,97 @@ export class PlayersService {
       }
     }
 
-    return { scope: "players", scanned, generated, skipped, failed };
+    return { scope: "players", scanned, generated, skipped, failed, nameTranslation };
+  }
+
+  /**
+   * Backfills `nameZh` for players that don't have one yet (idempotent — only
+   * null/empty rows are selected). Names go to the cheap QWEN slot in batches;
+   * the player's country travels along so transliteration can follow the name's
+   * origin language. Only results that actually contain CJK are written back —
+   * anything else stays null and is retried on a later run.
+   */
+  private async translateMissingNames(
+    teamId?: string,
+  ): Promise<NameTranslationResult> {
+    // Mock mode: never write placeholder names into rows; report a no-op.
+    if (this.config.aiMockMode) {
+      return { scanned: 0, translated: 0, failed: 0 };
+    }
+
+    const players = await this.prisma.player.findMany({
+      where: {
+        OR: [{ nameZh: null }, { nameZh: "" }],
+        ...(teamId ? { teamId } : {}),
+      },
+      // In-tournament squads first — same budget priority as the ratings loop.
+      orderBy: [{ team: { isEliminated: "asc" } }, { id: "asc" }],
+      take: NAME_TRANSLATION_BATCH_SIZE * NAME_TRANSLATION_MAX_BATCHES,
+      select: {
+        id: true,
+        nameEn: true,
+        team: { select: { nameEn: true, nameZh: true } },
+      },
+    });
+
+    let translated = 0;
+    let failed = 0;
+    let consecutiveFailures = 0;
+
+    for (let i = 0; i < players.length; i += NAME_TRANSLATION_BATCH_SIZE) {
+      const batch = players.slice(i, i + NAME_TRANSLATION_BATCH_SIZE);
+      const batchIds = new Set(batch.map((p) => p.id));
+
+      const report = await this.router.runReport<PlayerNameTranslationOutput>({
+        taskType: "PLAYER_NAME_TRANSLATION",
+        reportType: "PLAYER_NAME_TRANSLATION",
+        instruction:
+          "請為 context.players 中每位足球員產生台灣媒體慣用的繁體中文譯名：" +
+          "知名球員使用台灣主流體育媒體常用譯名（如 Lionel Messi → 梅西、Kylian Mbappé → 姆巴佩）；" +
+          "其他球員依其國籍（country 欄位）的語言發音音譯，以姓氏慣用譯名為主。" +
+          '只輸出 JSON：{"names":[{"id":"<照抄輸入的 id>","nameZh":"<繁體中文譯名>"}]}，' +
+          "每位球員一筆，id 不可增刪或修改。",
+        context: {
+          players: batch.map((p) => ({
+            id: p.id,
+            name: p.nameEn,
+            country: p.team?.nameZh ?? p.team?.nameEn ?? null,
+          })),
+        },
+        scope: "球員名單中文譯名",
+        schema: PlayerNameTranslationOutputSchema,
+        mockData: { names: [] },
+        allowModelKnowledge: true,
+      });
+
+      if (!report.ok || !report.data) {
+        failed += batch.length;
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= NAME_TRANSLATION_MAX_CONSECUTIVE_FAILURES) {
+          break; // provider is likely down — don't burn the remaining batches
+        }
+        continue;
+      }
+      consecutiveFailures = 0;
+
+      const applied = new Set<string>();
+      for (const item of report.data.names) {
+        const nameZh = item.nameZh?.trim();
+        if (!batchIds.has(item.id) || applied.has(item.id)) continue;
+        if (!nameZh || nameZh.length > 30 || !CJK_RE.test(nameZh)) continue;
+        applied.add(item.id);
+        // updateMany: no throw if the row was deleted while the batch was in flight.
+        await this.prisma.player.updateMany({
+          where: { id: item.id },
+          data: { nameZh },
+        });
+        translated += 1;
+      }
+
+      await sleep(this.config.aiGenerationDelayMs);
+    }
+
+    return { scanned: players.length, translated, failed };
   }
 
   /**

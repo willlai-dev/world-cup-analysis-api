@@ -504,7 +504,7 @@ export class MatchesService {
         const metrics = scorePrediction(snapshot, m.homeScore!, m.awayScore!);
         const fields = {
           reportId: report.id,
-          retro: !preMatch,
+          retro: !preMatch || report.id !== preMatch.id,
           predictedAt: report.createdAt,
           homeWinLean: snapshot.homeWinLean,
           drawLean: snapshot.drawLean,

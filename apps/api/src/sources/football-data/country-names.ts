@@ -69,3 +69,80 @@ export function countryNameZh(fifaCode?: string | null): string | undefined {
   if (!fifaCode) return undefined;
   return COUNTRY_NAME_ZH[fifaCode.toUpperCase()];
 }
+
+/**
+ * FIFA code → 所屬聯會（AFC/CAF/CONCACAF/CONMEBOL/OFC/UEFA）。football-data 不回
+ * 洲別，同步時用此表補 `Team.continent`；值與前端 /teams 洲別篩選選項一致。
+ */
+export const COUNTRY_CONFEDERATION: Record<string, string> = {
+  // AFC
+  AUS: 'AFC',
+  IRN: 'AFC',
+  IRQ: 'AFC',
+  JPN: 'AFC',
+  JOR: 'AFC',
+  KOR: 'AFC',
+  KSA: 'AFC',
+  QAT: 'AFC',
+  UZB: 'AFC',
+  // CAF
+  ALG: 'CAF',
+  CIV: 'CAF',
+  CMR: 'CAF',
+  COD: 'CAF',
+  CPV: 'CAF',
+  EGY: 'CAF',
+  GHA: 'CAF',
+  MAR: 'CAF',
+  NGA: 'CAF',
+  RSA: 'CAF',
+  SEN: 'CAF',
+  TUN: 'CAF',
+  // CONCACAF
+  CAN: 'CONCACAF',
+  CRC: 'CONCACAF',
+  CUW: 'CONCACAF',
+  HAI: 'CONCACAF',
+  MEX: 'CONCACAF',
+  PAN: 'CONCACAF',
+  USA: 'CONCACAF',
+  // CONMEBOL
+  ARG: 'CONMEBOL',
+  BRA: 'CONMEBOL',
+  CHI: 'CONMEBOL',
+  COL: 'CONMEBOL',
+  ECU: 'CONMEBOL',
+  PAR: 'CONMEBOL',
+  PER: 'CONMEBOL',
+  URU: 'CONMEBOL',
+  // OFC
+  NZL: 'OFC',
+  // UEFA
+  AUT: 'UEFA',
+  BEL: 'UEFA',
+  BIH: 'UEFA',
+  CRO: 'UEFA',
+  CZE: 'UEFA',
+  DEN: 'UEFA',
+  ENG: 'UEFA',
+  ESP: 'UEFA',
+  FRA: 'UEFA',
+  GER: 'UEFA',
+  ITA: 'UEFA',
+  NED: 'UEFA',
+  NOR: 'UEFA',
+  POL: 'UEFA',
+  POR: 'UEFA',
+  SCO: 'UEFA',
+  SRB: 'UEFA',
+  SUI: 'UEFA',
+  SWE: 'UEFA',
+  TUR: 'UEFA',
+  WAL: 'UEFA',
+};
+
+/** Resolve 聯會 by fifaCode; undefined = leave existing value. */
+export function countryConfederation(fifaCode?: string | null): string | undefined {
+  if (!fifaCode) return undefined;
+  return COUNTRY_CONFEDERATION[fifaCode.toUpperCase()];
+}

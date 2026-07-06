@@ -2,7 +2,7 @@
 
 This document describes the API that is actually implemented today in `apps/api`.
 
-- Generated from source-code scan on 2026-06-30.
+- Generated from source-code scan on 2026-07-06.
 - This is a read-only contract for a Next.js frontend agent.
 - Do not infer hidden routes, hidden fields, or future behavior.
 - If something is not stated here, assume it is not safe to use from the frontend.
@@ -439,11 +439,15 @@ All routes in this section already include the current `/api` prefix.
 
 Notes:
 
-- `featuredMatches` are the next 5 matches ordered by `kickoffAt ASC`.
+- `featuredMatches` returns up to 6 matches: recently `FINISHED` matches first (ordered by
+  `kickoffAt DESC`, i.e. newest results first), backfilled with `LIVE`/`SCHEDULED` matches
+  (ordered by `kickoffAt ASC`) when fewer than 6 finished matches exist. The list can therefore
+  mix statuses — frontend should branch on each item's `status`.
 - `championSummary` is the top 5 entries from the latest champion-prediction run, or `[]` if no run exists.
-- `featuredTeams` returns up to 6 teams ordered by `championScore DESC`.
-- `featuredPlayers` returns up to 6 players ordered by `overallScore DESC`.
-- `newsHighlights` returns up to 5 news items ordered by `publishedAt DESC`.
+- `featuredTeams` returns up to 8 **non-eliminated** teams (`isEliminated = false`), ordered by
+  `championScore DESC` (nulls last), then `worldRanking ASC` (nulls last).
+- `featuredPlayers` returns up to 8 players ordered by `overallScore DESC` (nulls last); each item includes nested `team`.
+- `newsHighlights` returns up to 6 news items ordered by `publishedAt DESC`.
 
 ### 5.2 Auth
 

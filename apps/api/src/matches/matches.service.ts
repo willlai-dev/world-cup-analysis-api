@@ -479,7 +479,7 @@ export class MatchesService {
           orderBy: { createdAt: "desc" },
           select: { id: true, createdAt: true, structuredJson: true },
         });
-        const report =
+        let report =
           preMatch ??
           (await this.prisma.aiReport.findFirst({
             where: {
@@ -491,12 +491,27 @@ export class MatchesService {
             orderBy: { createdAt: "desc" },
             select: { id: true, createdAt: true, structuredJson: true },
           }));
-        if (!report) {
-          noPrediction += 1;
-          continue;
+
+        let snapshot = report ? parsePredictionSnapshot(report.structuredJson) : null;
+        if (preMatch && report === preMatch && !snapshot) {
+          const retro = await this.prisma.aiReport.findFirst({
+            where: {
+              entityType: AiEntityType.MATCH,
+              entityId: m.id,
+              status: AiReportStatus.DONE,
+              reportType: RETRO_REPORT_TYPE,
+            },
+            orderBy: { createdAt: "desc" },
+            select: { id: true, createdAt: true, structuredJson: true },
+          });
+          const retroSnapshot = retro ? parsePredictionSnapshot(retro.structuredJson) : null;
+          if (retro && retroSnapshot) {
+            report = retro;
+            snapshot = retroSnapshot;
+          }
         }
-        const snapshot = parsePredictionSnapshot(report.structuredJson);
-        if (!snapshot) {
+
+        if (!report || !snapshot) {
           noPrediction += 1;
           continue;
         }

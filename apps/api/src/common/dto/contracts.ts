@@ -100,6 +100,18 @@ export type MatchPredictionDto = {
   riskNotes: string[];
   report?: AiReportDto | null;
   sourceUpdatedAt?: string | null;
+  /**
+   * Program-rule calibrated probabilities (0-100, summing to 100), scaled by
+   * the measured over/under-confidence of past REAL pre-kickoff predictions.
+   * null until enough settled samples exist. Raw values above stay untouched.
+   */
+  calibrated?: {
+    homeWinProbability: number;
+    drawProbability: number;
+    awayWinProbability: number;
+    lambda: number;
+    sampleSize: number;
+  } | null;
 };
 
 export type NewsSummary = {
@@ -247,6 +259,20 @@ export type PredictionOutcomeItemDto = {
   brierScore: number | null;
 };
 
+/** Per-team predicted-vs-actual bias (program rules; includes retro rows, counted). */
+export type PredictionTeamBiasDto = {
+  team: TeamSummary;
+  /** Settled matches involving this team that carried a predicted tendency. */
+  total: number;
+  retroCount: number;
+  tendencyHits: number;
+  tendencyHitRate: number | null;
+  /** Team did better than the predicted tendency (e.g. won when a loss was predicted). */
+  overPerformed: number;
+  /** Team did worse than the predicted tendency. */
+  underPerformed: number;
+};
+
 export type PredictionInsightsDto = {
   summary: {
     overall: PredictionInsightsBucketDto;
@@ -256,6 +282,16 @@ export type PredictionInsightsDto = {
     retro: PredictionInsightsBucketDto;
   };
   byStage: ({ stage: string } & PredictionInsightsBucketDto)[];
+  /** Most-sampled teams first. */
+  byTeam: PredictionTeamBiasDto[];
+  /** Current program-rule calibration (real samples only); null when nothing settled. */
+  calibration: {
+    sampleSize: number;
+    avgConfidence: number;
+    tendencyHitRate: number;
+    lambda: number;
+    applied: boolean;
+  } | null;
   /** Newest kickoff first. */
   items: PredictionOutcomeItemDto[];
 };

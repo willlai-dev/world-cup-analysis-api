@@ -20,6 +20,8 @@ import type {
   MatchPredictionDto,
   MatchSummary,
 } from "../common/dto/contracts";
+import { CalibrationService } from "../insights/calibration.service";
+import { applyCalibration } from "../insights/prediction-calibration";
 import { toAiReportDto, toMatchSummary } from "../mappers";
 import { PrismaService } from "../prisma/prisma.service";
 import type { ListMatchesQueryDto } from "./dto/list-matches-query.dto";
@@ -27,7 +29,8 @@ import { parsePredictionSnapshot, scorePrediction } from "./prediction-scoring";
 
 // Bump when the match-analysis prompt/schema changes so runReportIfChanged
 // regenerates existing analyses (the context hash changes with it).
-const MATCH_ANALYSIS_VERSION = 2;
+// v3: context gains predictionTrack (recent hit rate + per-team bias feedback).
+const MATCH_ANALYSIS_VERSION = 3;
 
 // Report types that count as a "real" pre-match prediction when settling.
 const PRE_MATCH_REPORT_TYPES = ["MATCH_PREDICTION", "MATCH_ANALYSIS"];
@@ -93,11 +96,16 @@ const matchInclude = {
   awayTeam: true,
 } satisfies Prisma.MatchInclude;
 
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 @Injectable()
 export class MatchesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly router: AiRouterService,
+    private readonly calibration: CalibrationService,
   ) {}
 
   async list(
@@ -213,6 +221,20 @@ export class MatchesService {
     let skipped = 0;
     let failed = 0;
 
+    // Phase 3: error feedback — recent real-prediction performance + per-team
+    // predicted-vs-actual bias, computed once per run and fed to every prompt.
+    const [calibration, teamTrack] = await Promise.all([
+      this.calibration.getParams(),
+      this.buildTeamTrack(),
+    ]);
+    const recentTrack = calibration
+      ? {
+          sampleSize: calibration.sampleSize,
+          tendencyHitRate: round2(calibration.tendencyHitRate),
+          avgConfidence: round2(calibration.avgConfidence),
+        }
+      : null;
+
     for (const m of matches) {
       if (generated >= MAX_GENERATIONS_PER_RUN) break;
       scanned += 1;
@@ -226,6 +248,11 @@ export class MatchesService {
         kickoffAt: m.kickoffAt.toISOString(),
         homeScore: m.homeScore,
         awayScore: m.awayScore,
+        predictionTrack: {
+          recent: recentTrack,
+          home: teamTrack.get(m.homeTeamId) ?? null,
+          away: teamTrack.get(m.awayTeamId) ?? null,
+        },
       };
       const report = await this.router.runReportIfChanged<MatchAnalysisOutput>({
         taskType: "MATCH_ANALYSIS",
@@ -235,7 +262,9 @@ export class MatchesService {
           "請依雙方國家隊資料分析此場賽事。只輸出 JSON,欄位:title、summary、keyFactors[]、" +
           "keyPlayers[{playerName,teamName,reason}]、prediction{homeWinLean,drawLean,awayWinLean(0-100),explanation}、" +
           'likelyScorelines(最可能的三種比分,格式 [{score:"主-客" 例如 "2-1", probability:0-100}],三筆機率遞減)、' +
-          "risks[]、dataLimitations[]。勝負只能表述為傾向,不可保證。",
+          "risks[]、dataLimitations[]。勝負只能表述為傾向,不可保證。" +
+          "context.predictionTrack 是本系統過往預測的表現回饋:recent.avgConfidence 高於 tendencyHitRate 代表近期預測過度自信,請把傾向數字收斂得更保守;" +
+          "home/away 的 overPerformed/underPerformed 代表該隊過去實際表現優於/劣於預測的次數,請據此微調對該隊的評估。",
         context,
         scope: `賽事：${m.homeTeam.nameEn} vs ${m.awayTeam.nameEn}`,
         schema: MatchAnalysisOutputSchema,
@@ -249,6 +278,50 @@ export class MatchesService {
     }
 
     return { scope: "matches", scanned, generated, skipped, failed };
+  }
+
+  /**
+   * Per-team predicted-vs-actual track from settled outcomes (retro included —
+   * it is form feedback for the prompt, not an accuracy claim). Rank map:
+   * win 2 / draw 1 / loss 0 from the team's perspective; over-performed means
+   * the actual rank beat the predicted one.
+   */
+  private async buildTeamTrack(): Promise<
+    Map<string, { matches: number; tendencyHits: number; overPerformed: number; underPerformed: number }>
+  > {
+    const outcomes = await this.prisma.matchPredictionOutcome.findMany({
+      where: { tendencyPredicted: { not: null } },
+      select: {
+        tendencyPredicted: true,
+        tendencyActual: true,
+        tendencyHit: true,
+        match: { select: { homeTeamId: true, awayTeamId: true } },
+      },
+    });
+    const track = new Map<
+      string,
+      { matches: number; tendencyHits: number; overPerformed: number; underPerformed: number }
+    >();
+    const rankFor = (tendency: string, side: "home" | "away"): number => {
+      if (tendency === "DRAW") return 1;
+      const won = side === "home" ? tendency === "HOME" : tendency === "AWAY";
+      return won ? 2 : 0;
+    };
+    for (const o of outcomes) {
+      for (const side of ["home", "away"] as const) {
+        const teamId = side === "home" ? o.match.homeTeamId : o.match.awayTeamId;
+        const entry =
+          track.get(teamId) ?? { matches: 0, tendencyHits: 0, overPerformed: 0, underPerformed: 0 };
+        entry.matches += 1;
+        if (o.tendencyHit) entry.tendencyHits += 1;
+        const predicted = rankFor(o.tendencyPredicted!, side);
+        const actual = rankFor(o.tendencyActual, side);
+        if (actual > predicted) entry.overPerformed += 1;
+        else if (actual < predicted) entry.underPerformed += 1;
+        track.set(teamId, entry);
+      }
+    }
+    return track;
   }
 
   /**
@@ -505,6 +578,17 @@ export class MatchesService {
       )
       .slice(0, 3)
       .map((s) => ({ score: s.score, probability: s.probability ?? null }));
+
+    // Phase 3: calibrated probabilities from the measured over/under-confidence
+    // of past real predictions. Raw leans stay untouched above.
+    const params = await this.calibration.getParams();
+    const scaled = applyCalibration(
+      params,
+      structured?.prediction?.homeWinLean ?? null,
+      structured?.prediction?.drawLean ?? null,
+      structured?.prediction?.awayWinLean ?? null,
+    );
+
     return {
       matchId,
       homeWinProbability: structured?.prediction?.homeWinLean ?? null,
@@ -517,6 +601,14 @@ export class MatchesService {
       sourceUpdatedAt: match.sourceUpdatedAt
         ? match.sourceUpdatedAt.toISOString()
         : null,
+      calibrated:
+        scaled && params
+          ? {
+              ...scaled,
+              lambda: round2(params.lambda),
+              sampleSize: params.sampleSize,
+            }
+          : null,
     };
   }
 

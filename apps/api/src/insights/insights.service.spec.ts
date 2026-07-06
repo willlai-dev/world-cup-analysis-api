@@ -1,8 +1,28 @@
 import type { PrismaService } from '../prisma/prisma.service';
+import type { CalibrationService } from './calibration.service';
 import { InsightsService } from './insights.service';
 
+const CAL_PARAMS = {
+  sampleSize: 12,
+  avgConfidence: 0.55,
+  tendencyHitRate: 0.5,
+  lambda: 0.91,
+  applied: true,
+};
+
+function buildService(rows: unknown[], params: unknown = CAL_PARAMS) {
+  const prisma = {
+    matchPredictionOutcome: { findMany: jest.fn().mockResolvedValue(rows) },
+  };
+  const calibration = { getParams: jest.fn().mockResolvedValue(params) };
+  return new InsightsService(
+    prisma as unknown as PrismaService,
+    calibration as unknown as CalibrationService,
+  );
+}
+
 const team = (nameEn: string) => ({
-  id: `t-${nameEn}`,
+  id: `t-${nameEn.toLowerCase()}`,
   nameEn,
   nameZh: null,
   fifaCode: null,
@@ -51,30 +71,28 @@ function outcome(overrides: Record<string, unknown>) {
 }
 
 describe('InsightsService.getPredictionInsights', () => {
-  it('aggregates real and retro buckets separately and maps items', async () => {
-    const prisma = {
-      matchPredictionOutcome: {
-        findMany: jest.fn().mockResolvedValue([
-          outcome({}),
-          outcome({
-            id: 'o2',
-            matchId: 'm2',
-            retro: true,
-            tendencyHit: false,
-            exactScoreHit: false,
-            top3ScoreHit: false,
-            brierScore: 0.9,
-            match: {
-              stage: 'ROUND_OF_16',
-              kickoffAt: new Date('2026-07-04T18:00:00Z'),
-              homeTeam: team('France'),
-              awayTeam: team('Paraguay'),
-            },
-          }),
-        ]),
+  const twoOutcomes = [
+    outcome({}),
+    outcome({
+      id: 'o2',
+      matchId: 'm2',
+      retro: true,
+      tendencyHit: false,
+      exactScoreHit: false,
+      top3ScoreHit: false,
+      tendencyActual: 'AWAY',
+      brierScore: 0.9,
+      match: {
+        stage: 'ROUND_OF_16',
+        kickoffAt: new Date('2026-07-04T18:00:00Z'),
+        homeTeam: team('France'),
+        awayTeam: team('Paraguay'),
       },
-    };
-    const service = new InsightsService(prisma as unknown as PrismaService);
+    }),
+  ];
+
+  it('aggregates real and retro buckets separately and maps items', async () => {
+    const service = buildService(twoOutcomes);
 
     const dto = await service.getPredictionInsights();
 
@@ -91,16 +109,31 @@ describe('InsightsService.getPredictionInsights', () => {
       likelyScorelines: [{ score: '2-1', probability: 30 }],
       retro: false,
     });
+    expect(dto.calibration).toMatchObject({ lambda: 0.91, applied: true, sampleSize: 12 });
+  });
+
+  it('computes per-team over/under-performance from both sides of a match', async () => {
+    const service = buildService(twoOutcomes);
+
+    const dto = await service.getPredictionInsights();
+
+    const byName = Object.fromEntries(dto.byTeam.map((t) => [t.team.nameEn, t]));
+    // m1: predicted HOME, actual HOME — both sides as predicted.
+    expect(byName['Brazil']).toMatchObject({ total: 1, tendencyHits: 1, overPerformed: 0, underPerformed: 0 });
+    // m2 (retro): predicted HOME but actual AWAY — France under, Paraguay over.
+    expect(byName['France']).toMatchObject({ total: 1, retroCount: 1, underPerformed: 1 });
+    expect(byName['Paraguay']).toMatchObject({ total: 1, overPerformed: 1 });
   });
 
   it('returns empty buckets (null rates) when nothing is settled yet', async () => {
-    const prisma = { matchPredictionOutcome: { findMany: jest.fn().mockResolvedValue([]) } };
-    const service = new InsightsService(prisma as unknown as PrismaService);
+    const service = buildService([], null);
 
     const dto = await service.getPredictionInsights();
 
     expect(dto.summary.overall).toMatchObject({ total: 0, tendencyHitRate: null, avgBrier: null });
     expect(dto.byStage).toEqual([]);
+    expect(dto.byTeam).toEqual([]);
+    expect(dto.calibration).toBeNull();
     expect(dto.items).toEqual([]);
   });
 });

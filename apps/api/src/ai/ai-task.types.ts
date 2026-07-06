@@ -6,6 +6,7 @@ import type { AiEntityType } from '@prisma/client';
  */
 export type AiTaskType =
   | 'MATCH_ANALYSIS'
+  | 'RETRO_MATCH_ANALYSIS'
   | 'CHAMPION_PREDICTION_A'
   | 'CHAMPION_PREDICTION_B'
   | 'CHAMPION_PREDICTION_FINAL'
@@ -48,6 +49,7 @@ export type RoutingRule = {
 /** Primary → fallback model selection per task (spec §"Model Routing"). */
 export const ROUTING_TABLE: Record<AiTaskType, RoutingRule> = {
   MATCH_ANALYSIS: { primary: 'NVIDIA_ULTRA', fallback: 'QWEN_PLUS' },
+  RETRO_MATCH_ANALYSIS: { primary: 'NVIDIA_ULTRA', fallback: 'QWEN_PLUS' },
   CHAMPION_PREDICTION_A: { primary: 'NVIDIA_ULTRA', fallback: null },
   CHAMPION_PREDICTION_B: { primary: 'QWEN_PLUS', fallback: null },
   CHAMPION_PREDICTION_FINAL: { primary: 'QWEN_PLUS', fallback: 'NVIDIA_ULTRA' },
@@ -72,6 +74,7 @@ export const ROUTING_TABLE: Record<AiTaskType, RoutingRule> = {
 /** Maps a task to the {@link AiEntityType} stored on AiReport / AiUsageLog. */
 export const TASK_ENTITY_TYPE: Record<AiTaskType, AiEntityType> = {
   MATCH_ANALYSIS: 'MATCH',
+  RETRO_MATCH_ANALYSIS: 'MATCH',
   CHAMPION_PREDICTION_A: 'CHAMPION_PREDICTION',
   CHAMPION_PREDICTION_B: 'CHAMPION_PREDICTION',
   CHAMPION_PREDICTION_FINAL: 'CHAMPION_PREDICTION',

@@ -26,7 +26,9 @@ export const PIPELINE_PRESETS = {
     JobType.GENERATE_TEAM_RATINGS,
     JobType.GENERATE_PLAYER_STATUS,
     JobType.GENERATE_MATCH_ANALYSIS,
+    JobType.GENERATE_RETRO_ANALYSIS,
     JobType.GENERATE_CHAMPION_PREDICTIONS,
+    JobType.SCORE_PREDICTIONS,
   ],
   /** Data only — refresh external sources without spending AI budget. */
   SYNC: [
@@ -44,7 +46,9 @@ export const PIPELINE_PRESETS = {
     JobType.GENERATE_TEAM_RATINGS,
     JobType.GENERATE_PLAYER_STATUS,
     JobType.GENERATE_MATCH_ANALYSIS,
+    JobType.GENERATE_RETRO_ANALYSIS,
     JobType.GENERATE_CHAMPION_PREDICTIONS,
+    JobType.SCORE_PREDICTIONS,
   ],
 
   // ── Per-domain presets ────────────────────────────────────────────────────
@@ -61,11 +65,12 @@ export const PIPELINE_PRESETS = {
     JobType.GENERATE_PLAYER_RATINGS,
     JobType.GENERATE_PLAYER_STATUS,
   ],
-  /** 賽事：抓賽程＋比分 → 賽前分析。 */
+  /** 賽事：抓賽程＋比分 → 賽前分析 → 預測結算。 */
   MATCHES: [
     JobType.SYNC_FIXTURES,
     JobType.SYNC_RESULTS,
     JobType.GENERATE_MATCH_ANALYSIS,
+    JobType.SCORE_PREDICTIONS,
   ],
   /** 新聞：抓新聞 → 摘要／分類／標籤 → 影響分析。 */
   NEWS: [
@@ -75,6 +80,8 @@ export const PIPELINE_PRESETS = {
   ],
   /** 冠軍預測：以現有球隊評分產生 A/B/final run（建議先跑 TEAMS）。 */
   CHAMPION: [JobType.GENERATE_CHAMPION_PREDICTIONS],
+  /** 回補：已完賽但無賽前分析的比賽 → 賽前視角回補 → 預測結算。 */
+  RETRO: [JobType.GENERATE_RETRO_ANALYSIS, JobType.SCORE_PREDICTIONS],
 } as const satisfies Record<string, JobType[]>;
 
 export type PipelinePreset = keyof typeof PIPELINE_PRESETS;

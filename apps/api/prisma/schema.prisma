@@ -159,6 +159,8 @@ enum JobType {
   GENERATE_NEWS_IMPACT
   GENERATE_PLAYER_STATUS
   GENERATE_TEAM_RATINGS
+  GENERATE_RETRO_ANALYSIS
+  SCORE_PREDICTIONS
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +293,8 @@ model Match {
   rawPayload      Json?
   events          MatchEvent[]
 
+  predictionOutcome MatchPredictionOutcome?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -300,6 +304,45 @@ model Match {
   @@index([groupName])
   @@index([homeTeamId])
   @@index([awayTeamId])
+}
+
+/// 賽前預測 vs 實際比分的結算（SCORE_PREDICTIONS job 寫入，程式規則、無 AI）。
+/// retro=true 表示預測來自賽後回補的 RETRO_MATCH_ANALYSIS —— 模型訓練資料可能
+/// 已包含實際賽果（知識污染），統計時必須與真正的賽前預測分開呈現，
+/// 且不得作為校正（calibration）樣本。
+model MatchPredictionOutcome {
+  id      String @id @default(cuid())
+  matchId String @unique
+  match   Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  /// AiReport the prediction came from (MATCH_ANALYSIS or RETRO_MATCH_ANALYSIS).
+  reportId String
+  retro    Boolean @default(false)
+  /// When the prediction was generated (report.createdAt).
+  predictedAt DateTime
+
+  // Prediction snapshot (0-100 leans as produced; may not sum to 100).
+  homeWinLean      Float?
+  drawLean         Float?
+  awayWinLean      Float?
+  likelyScorelines Json?
+
+  // Actuals + program-rule metrics.
+  actualHomeScore   Int
+  actualAwayScore   Int
+  /// HOME | DRAW | AWAY — argmax of the leans / derived from the actual score.
+  tendencyPredicted String?
+  tendencyActual    String
+  tendencyHit       Boolean
+  exactScoreHit     Boolean
+  top3ScoreHit      Boolean
+  /// Multi-class Brier score over normalized leans (0 best, 2 worst); null when leans missing.
+  brierScore Float?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([retro])
+  @@index([predictedAt])
 }
 
 model MatchEvent {

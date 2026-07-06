@@ -37,6 +37,7 @@ describe('JobsScheduler', () => {
       'GENERATE_NEWS_IMPACT',
       'GENERATE_MATCH_ANALYSIS',
       'GENERATE_CHAMPION_PREDICTIONS',
+      'SCORE_PREDICTIONS',
     ]);
     expect(FULL_PIPELINE).not.toContain('GENERATE_PLAYER_RATINGS');
     expect(FULL_PIPELINE).not.toContain('GENERATE_TEAM_RATINGS');

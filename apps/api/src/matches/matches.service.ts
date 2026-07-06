@@ -23,10 +23,19 @@ import type {
 import { toAiReportDto, toMatchSummary } from "../mappers";
 import { PrismaService } from "../prisma/prisma.service";
 import type { ListMatchesQueryDto } from "./dto/list-matches-query.dto";
+import { parsePredictionSnapshot, scorePrediction } from "./prediction-scoring";
 
 // Bump when the match-analysis prompt/schema changes so runReportIfChanged
 // regenerates existing analyses (the context hash changes with it).
 const MATCH_ANALYSIS_VERSION = 2;
+
+// Report types that count as a "real" pre-match prediction when settling.
+const PRE_MATCH_REPORT_TYPES = ["MATCH_PREDICTION", "MATCH_ANALYSIS"];
+// 賽後回補的賽前視角分析。Deliberately NOT in PRE_MATCH_REPORT_TYPES and not
+// queried by getAnalysis/getPrediction — retro reports exist only for
+// settlement + insights, never as the match page's displayed analysis.
+const RETRO_REPORT_TYPE = "RETRO_MATCH_ANALYSIS";
+const RETRO_ANALYSIS_VERSION = 1;
 
 const MATCH_MOCK: MatchAnalysisOutput = {
   title: "【AI_MOCK_MODE】賽事分析示範",
@@ -40,6 +49,29 @@ const MATCH_MOCK: MatchAnalysisOutput = {
     explanation: "示範",
   },
   likelyScorelines: [],
+  risks: [],
+  dataLimitations: ["示範模式"],
+};
+
+// Retro mock carries scoreable values (unlike MATCH_MOCK's all-zero leans,
+// which settlement treats as "no prediction") so the retro → scoring flow can
+// be exercised end-to-end in AI_MOCK_MODE.
+const RETRO_MOCK: MatchAnalysisOutput = {
+  title: "【AI_MOCK_MODE】回補賽前分析示範",
+  summary: "示範模式，尚未串接真實模型。",
+  keyFactors: [],
+  keyPlayers: [],
+  prediction: {
+    homeWinLean: 55,
+    drawLean: 25,
+    awayWinLean: 20,
+    explanation: "示範",
+  },
+  likelyScorelines: [
+    { score: "2-1", probability: 30 },
+    { score: "1-1", probability: 25 },
+    { score: "1-0", probability: 20 },
+  ],
   risks: [],
   dataLimitations: ["示範模式"],
 };
@@ -217,6 +249,215 @@ export class MatchesService {
     }
 
     return { scope: "matches", scanned, generated, skipped, failed };
+  }
+
+  /**
+   * Job: 賽後回補的「賽前視角」分析 — for FINISHED matches that never got a
+   * real pre-kickoff MATCH_ANALYSIS (site went live mid-tournament). Context
+   * is restricted to information knowable before kickoff (both sides' earlier
+   * results); the actual score is never included, and the strict prompt
+   * (allowModelKnowledge=false) keeps the model on the provided snapshot to
+   * reduce knowledge contamination — the model's training data may contain
+   * the real result, so these reports are flagged retro at settlement and
+   * must never feed calibration.
+   */
+  async generateRetroAnalyses(): Promise<GenerationResult> {
+    const matches = await this.prisma.match.findMany({
+      where: {
+        status: MatchStatus.FINISHED,
+        homeScore: { not: null },
+        awayScore: { not: null },
+      },
+      orderBy: { kickoffAt: "asc" },
+      include: matchInclude,
+    });
+    let scanned = 0;
+    let generated = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    for (const m of matches) {
+      if (generated >= MAX_GENERATIONS_PER_RUN) break;
+      scanned += 1;
+
+      // A real pre-kickoff analysis exists — settlement uses that one instead.
+      const hasPreMatch = await this.prisma.aiReport.count({
+        where: {
+          entityType: AiEntityType.MATCH,
+          entityId: m.id,
+          status: AiReportStatus.DONE,
+          reportType: { in: PRE_MATCH_REPORT_TYPES },
+          createdAt: { lt: m.kickoffAt },
+        },
+      });
+      if (hasPreMatch > 0) {
+        skipped += 1;
+        continue;
+      }
+
+      const [homeForm, awayForm] = await Promise.all([
+        this.finishedResultsBefore(m.homeTeamId, m.kickoffAt),
+        this.finishedResultsBefore(m.awayTeamId, m.kickoffAt),
+      ]);
+      const context = {
+        v: RETRO_ANALYSIS_VERSION,
+        retro: true,
+        home: m.homeTeam.nameEn,
+        away: m.awayTeam.nameEn,
+        stage: m.stage,
+        group: m.groupName,
+        kickoffAt: m.kickoffAt.toISOString(),
+        homeRecentResults: homeForm,
+        awayRecentResults: awayForm,
+      };
+      const report = await this.router.runReportIfChanged<MatchAnalysisOutput>({
+        taskType: "RETRO_MATCH_ANALYSIS",
+        entityId: m.id,
+        reportType: RETRO_REPORT_TYPE,
+        instruction:
+          "這是一場已結束賽事的「賽前視角」回補分析。你只能根據 context 提供的開賽前資訊" +
+          "（雙方在開賽前的近期賽果、輪次、分組）進行分析與預測，" +
+          "嚴禁使用或引用你可能記得的這場比賽實際結果或其後發生的任何事件。" +
+          "只輸出 JSON,欄位:title、summary、keyFactors[]、" +
+          "keyPlayers[{playerName,teamName,reason}]、prediction{homeWinLean,drawLean,awayWinLean(0-100),explanation}、" +
+          'likelyScorelines(最可能的三種比分,格式 [{score:"主-客" 例如 "2-1", probability:0-100}],三筆機率遞減)、' +
+          "risks[]、dataLimitations[]。勝負只能表述為傾向,不可保證。",
+        context,
+        scope: `回補賽前分析：${m.homeTeam.nameEn} vs ${m.awayTeam.nameEn}`,
+        schema: MatchAnalysisOutputSchema,
+        mockData: RETRO_MOCK,
+        allowModelKnowledge: false,
+      });
+
+      if (report.skipped) skipped += 1;
+      else if (report.ok) generated += 1;
+      else failed += 1;
+    }
+
+    return { scope: "retro-analyses", scanned, generated, skipped, failed };
+  }
+
+  /** A team's finished results before `before` (as-of-kickoff form context). */
+  private async finishedResultsBefore(
+    teamId: string,
+    before: Date,
+    take = 5,
+  ): Promise<{ date: string; fixture: string; stage: string }[]> {
+    const rows = await this.prisma.match.findMany({
+      where: {
+        status: MatchStatus.FINISHED,
+        kickoffAt: { lt: before },
+        homeScore: { not: null },
+        awayScore: { not: null },
+        OR: [{ homeTeamId: teamId }, { awayTeamId: teamId }],
+      },
+      orderBy: { kickoffAt: "desc" },
+      take,
+      select: {
+        kickoffAt: true,
+        homeScore: true,
+        awayScore: true,
+        stage: true,
+        homeTeam: { select: { nameEn: true } },
+        awayTeam: { select: { nameEn: true } },
+      },
+    });
+    return rows.map((r) => ({
+      date: r.kickoffAt.toISOString().slice(0, 10),
+      fixture: `${r.homeTeam.nameEn} ${r.homeScore}-${r.awayScore} ${r.awayTeam.nameEn}`,
+      stage: r.stage,
+    }));
+  }
+
+  /**
+   * Job: settle predictions against final scores (program rules — no AI, no
+   * budget). For every FINISHED match: prefer the latest DONE report generated
+   * BEFORE kickoff (a real prediction); fall back to a retro report, flagged
+   * `retro`. Upserts one MatchPredictionOutcome per match; reruns are
+   * idempotent and pick up newly finished matches / newly backfilled reports.
+   */
+  async scorePredictions(): Promise<Record<string, unknown>> {
+    const matches = await this.prisma.match.findMany({
+      where: {
+        status: MatchStatus.FINISHED,
+        homeScore: { not: null },
+        awayScore: { not: null },
+      },
+      orderBy: { kickoffAt: "asc" },
+      select: { id: true, kickoffAt: true, homeScore: true, awayScore: true },
+    });
+
+    let scanned = 0;
+    let scored = 0;
+    let noPrediction = 0;
+    let failed = 0;
+
+    for (const m of matches) {
+      scanned += 1;
+      try {
+        const preMatch = await this.prisma.aiReport.findFirst({
+          where: {
+            entityType: AiEntityType.MATCH,
+            entityId: m.id,
+            status: AiReportStatus.DONE,
+            reportType: { in: PRE_MATCH_REPORT_TYPES },
+            createdAt: { lt: m.kickoffAt },
+          },
+          orderBy: { createdAt: "desc" },
+          select: { id: true, createdAt: true, structuredJson: true },
+        });
+        const report =
+          preMatch ??
+          (await this.prisma.aiReport.findFirst({
+            where: {
+              entityType: AiEntityType.MATCH,
+              entityId: m.id,
+              status: AiReportStatus.DONE,
+              reportType: RETRO_REPORT_TYPE,
+            },
+            orderBy: { createdAt: "desc" },
+            select: { id: true, createdAt: true, structuredJson: true },
+          }));
+        if (!report) {
+          noPrediction += 1;
+          continue;
+        }
+        const snapshot = parsePredictionSnapshot(report.structuredJson);
+        if (!snapshot) {
+          noPrediction += 1;
+          continue;
+        }
+
+        const metrics = scorePrediction(snapshot, m.homeScore!, m.awayScore!);
+        const fields = {
+          reportId: report.id,
+          retro: !preMatch,
+          predictedAt: report.createdAt,
+          homeWinLean: snapshot.homeWinLean,
+          drawLean: snapshot.drawLean,
+          awayWinLean: snapshot.awayWinLean,
+          likelyScorelines: snapshot.likelyScorelines as unknown as Prisma.InputJsonValue,
+          actualHomeScore: m.homeScore!,
+          actualAwayScore: m.awayScore!,
+          tendencyPredicted: metrics.tendencyPredicted,
+          tendencyActual: metrics.tendencyActual,
+          tendencyHit: metrics.tendencyHit,
+          exactScoreHit: metrics.exactScoreHit,
+          top3ScoreHit: metrics.top3ScoreHit,
+          brierScore: metrics.brierScore,
+        };
+        await this.prisma.matchPredictionOutcome.upsert({
+          where: { matchId: m.id },
+          create: { matchId: m.id, ...fields },
+          update: fields,
+        });
+        scored += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+
+    return { scope: "prediction-scoring", scanned, scored, noPrediction, failed };
   }
 
   async getAnalysis(matchId: string): Promise<AiReportDto | null> {

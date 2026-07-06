@@ -388,6 +388,10 @@ export class JobsService implements OnModuleInit {
         return this.players.generateStatuses();
       case JobType.GENERATE_MATCH_ANALYSIS:
         return this.matches.generateAnalyses();
+      case JobType.GENERATE_RETRO_ANALYSIS:
+        return this.matches.generateRetroAnalyses();
+      case JobType.SCORE_PREDICTIONS:
+        return this.matches.scorePredictions();
       case JobType.GENERATE_CHAMPION_PREDICTIONS:
         return this.champion.generateSystemRun();
       default:

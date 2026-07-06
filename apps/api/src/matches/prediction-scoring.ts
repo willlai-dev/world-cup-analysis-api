@@ -54,12 +54,18 @@ export function parsePredictionSnapshot(structuredJson: unknown): PredictionSnap
   const rawScorelines = Array.isArray(root.likelyScorelines) ? root.likelyScorelines : [];
   const likelyScorelines = rawScorelines
     .filter((s): s is Record<string, unknown> => Boolean(s) && typeof s === 'object')
-    .map((s) => ({
+    .map((s, idx) => ({
+      idx,
       score: typeof s.score === 'string' ? s.score : '',
       probability: finiteOrNull(s.probability),
     }))
     .filter((s) => s.score.length > 0)
-    .slice(0, 3);
+    .sort(
+      (a, b) =>
+        (b.probability ?? Number.NEGATIVE_INFINITY) - (a.probability ?? Number.NEGATIVE_INFINITY) || a.idx - b.idx,
+    )
+    .slice(0, 3)
+    .map(({ idx, ...rest }) => rest);
 
   if (homeWinLean === null && drawLean === null && awayWinLean === null && likelyScorelines.length === 0) {
     return null;

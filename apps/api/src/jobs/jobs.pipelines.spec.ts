@@ -17,6 +17,7 @@ describe('PIPELINE_PRESETS', () => {
       'MATCHES',
       'NEWS',
       'CHAMPION',
+      'RETRO',
     ]);
   });
 
@@ -40,6 +41,7 @@ describe('PIPELINE_PRESETS', () => {
       'SYNC_FIXTURES',
       'SYNC_RESULTS',
       'GENERATE_MATCH_ANALYSIS',
+      'SCORE_PREDICTIONS',
     ]);
     expect(PIPELINE_PRESETS.NEWS).toEqual([
       'FETCH_NEWS',
@@ -47,6 +49,7 @@ describe('PIPELINE_PRESETS', () => {
       'GENERATE_NEWS_IMPACT',
     ]);
     expect(PIPELINE_PRESETS.CHAMPION).toEqual(['GENERATE_CHAMPION_PREDICTIONS']);
+    expect(PIPELINE_PRESETS.RETRO).toEqual(['GENERATE_RETRO_ANALYSIS', 'SCORE_PREDICTIONS']);
   });
 
   it('FULL runs every job in dependency-safe order', () => {

@@ -19,6 +19,8 @@ export const FULL_PIPELINE: JobType[] = [
   JobType.GENERATE_NEWS_IMPACT,
   JobType.GENERATE_MATCH_ANALYSIS,
   JobType.GENERATE_CHAMPION_PREDICTIONS,
+  // Settlement is program-rule only (no AI budget): last, after fresh results.
+  JobType.SCORE_PREDICTIONS,
 ];
 
 /**
@@ -34,6 +36,7 @@ export const REFRESH_PIPELINE: JobType[] = [
   JobType.GENERATE_NEWS_IMPACT,
   JobType.GENERATE_MATCH_ANALYSIS,
   JobType.GENERATE_CHAMPION_PREDICTIONS,
+  JobType.SCORE_PREDICTIONS,
 ];
 
 /**

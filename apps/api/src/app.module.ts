@@ -9,6 +9,7 @@ import { ConfigModule } from './config/config.module';
 import { FavoritesModule } from './favorites/favorites.module';
 import { HealthModule } from './health/health.module';
 import { HomeModule } from './home/home.module';
+import { InsightsModule } from './insights/insights.module';
 import { JobsModule } from './jobs/jobs.module';
 import { MatchesModule } from './matches/matches.module';
 import { NewsModule } from './news/news.module';
@@ -33,6 +34,7 @@ import { UsersModule } from './users/users.module';
     ChampionPredictionModule,
     NewsModule,
     HomeModule,
+    InsightsModule,
     AiModule,
     JobsModule,
     HealthModule,

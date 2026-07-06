@@ -757,7 +757,28 @@ Behavior notes:
 - Under `AI_MOCK_MODE=true` the response is the deterministic `provider = "PROGRAM_RULE"`, `model = "mock"` mock (history is accepted but ignored; scope stays `一般問答`).
   Under `AI_MOCK_MODE=false` `provider` is `NVIDIA`/`QWEN`; on total provider failure it degrades to a `PROGRAM_RULE` notice.
 
-### 5.12 AI Quota (Phase 3)
+### 5.12 Prediction Insights (PREMIUM)
+
+| Method | Path                        | Status | Access                | Success `data`          |
+| ------ | --------------------------- | ------ | --------------------- | ----------------------- |
+| GET    | `/api/insights/predictions` | 200    | `PREMIUM` (or `ADMIN`) | `PredictionInsightsDto` |
+
+Behavior notes:
+
+- Program-rule aggregation over `MatchPredictionOutcome` rows (written by the
+  `SCORE_PREDICTIONS` job) — no AI call, no quota.
+- `data.summary` has three buckets (`overall` / `real` / `retro`), each
+  `{ total, tendencyHits, tendencyHitRate, exactScoreHits, exactScoreHitRate, top3ScoreHits, top3ScoreHitRate, avgBrier }`
+  (rates are `0..1` or `null` when `total = 0`; `avgBrier` `0` best `2` worst).
+- `real` = predictions generated **before kickoff** (the honest accuracy signal);
+  `retro` = post-hoc backfilled `RETRO_MATCH_ANALYSIS` predictions (the model may
+  have memorized real results — display separately, never blend into accuracy claims).
+- `data.byStage`: same bucket fields per stage, ordered by each stage's earliest kickoff.
+- `data.items`: per-match outcomes (newest kickoff first), each with `homeTeam`/`awayTeam`
+  (`TeamSummary`), actual score, leans, `likelyScorelines`, hit flags, `brierScore`, `retro`.
+- `USER` receives `403 FORBIDDEN` — frontend shows the premium upsell notice.
+
+### 5.13 AI Quota (Phase 3)
 
 Per-user quota is enforced on every AI-consuming endpoint. Exceeding a bucket returns
 `429` with `error.code = "AI_QUOTA_EXCEEDED"` and

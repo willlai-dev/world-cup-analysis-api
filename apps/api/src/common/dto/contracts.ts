@@ -100,6 +100,18 @@ export type MatchPredictionDto = {
   riskNotes: string[];
   report?: AiReportDto | null;
   sourceUpdatedAt?: string | null;
+  /**
+   * Program-rule calibrated probabilities (0-100, summing to 100), scaled by
+   * the measured over/under-confidence of past REAL pre-kickoff predictions.
+   * null until enough settled samples exist. Raw values above stay untouched.
+   */
+  calibrated?: {
+    homeWinProbability: number;
+    drawProbability: number;
+    awayWinProbability: number;
+    lambda: number;
+    sampleSize: number;
+  } | null;
 };
 
 export type NewsSummary = {
@@ -204,4 +216,82 @@ export type HomeHighlightsResponse = {
   featuredTeams: TeamSummary[];
   featuredPlayers: PlayerSummary[];
   newsHighlights: NewsSummary[];
+};
+
+// ----- Prediction insights (PREMIUM) — GET /insights/predictions -----
+
+export type PredictionTendency = 'HOME' | 'DRAW' | 'AWAY';
+
+/** Hit-rate aggregate over a set of settled predictions. Rates are 0-1, null when total=0. */
+export type PredictionInsightsBucketDto = {
+  total: number;
+  tendencyHits: number;
+  tendencyHitRate: number | null;
+  exactScoreHits: number;
+  exactScoreHitRate: number | null;
+  top3ScoreHits: number;
+  top3ScoreHitRate: number | null;
+  /** Mean multi-class Brier (0 best, 2 worst); null when no scored leans. */
+  avgBrier: number | null;
+};
+
+/** One settled prediction (MatchPredictionOutcome joined with its match). */
+export type PredictionOutcomeItemDto = {
+  matchId: string;
+  stage: string;
+  kickoffAt: string;
+  homeTeam: TeamSummary;
+  awayTeam: TeamSummary;
+  actualHomeScore: number;
+  actualAwayScore: number;
+  /** true = prediction was backfilled after the match (knowledge-contamination risk). */
+  retro: boolean;
+  predictedAt: string;
+  homeWinLean: number | null;
+  drawLean: number | null;
+  awayWinLean: number | null;
+  likelyScorelines: ScoreLinePredictionDto[];
+  tendencyPredicted: PredictionTendency | null;
+  tendencyActual: PredictionTendency;
+  tendencyHit: boolean;
+  exactScoreHit: boolean;
+  top3ScoreHit: boolean;
+  brierScore: number | null;
+};
+
+/** Per-team predicted-vs-actual bias (program rules; includes retro rows, counted). */
+export type PredictionTeamBiasDto = {
+  team: TeamSummary;
+  /** Settled matches involving this team that carried a predicted tendency. */
+  total: number;
+  retroCount: number;
+  tendencyHits: number;
+  tendencyHitRate: number | null;
+  /** Team did better than the predicted tendency (e.g. won when a loss was predicted). */
+  overPerformed: number;
+  /** Team did worse than the predicted tendency. */
+  underPerformed: number;
+};
+
+export type PredictionInsightsDto = {
+  summary: {
+    overall: PredictionInsightsBucketDto;
+    /** Predictions genuinely made before kickoff — the only honest accuracy signal. */
+    real: PredictionInsightsBucketDto;
+    /** Backfilled retro predictions — shown separately, never blended into `real`. */
+    retro: PredictionInsightsBucketDto;
+  };
+  byStage: ({ stage: string } & PredictionInsightsBucketDto)[];
+  /** Most-sampled teams first. */
+  byTeam: PredictionTeamBiasDto[];
+  /** Current program-rule calibration (real samples only); null when nothing settled. */
+  calibration: {
+    sampleSize: number;
+    avgConfidence: number;
+    tendencyHitRate: number;
+    lambda: number;
+    applied: boolean;
+  } | null;
+  /** Newest kickoff first. */
+  items: PredictionOutcomeItemDto[];
 };

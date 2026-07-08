@@ -60,6 +60,8 @@ export function parsePredictionSnapshot(structuredJson: unknown): PredictionSnap
       probability: finiteOrNull(s.probability),
     }))
     .filter((s) => s.score.length > 0)
+    // The schema asks for probability-descending but doesn't enforce it — sort
+    // defensively (nulls last, stable via idx) so top-1/top-3 mean what they say.
     .sort(
       (a, b) =>
         (b.probability ?? Number.NEGATIVE_INFINITY) - (a.probability ?? Number.NEGATIVE_INFINITY) || a.idx - b.idx,

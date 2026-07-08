@@ -62,7 +62,7 @@ export class InsightsService {
       byStageMap.set(o.match.stage, list);
     }
 
-    const params = await this.calibration.getParams();
+    const { tendency: params } = await this.calibration.getBundle();
 
     return {
       summary: {
@@ -84,8 +84,10 @@ export class InsightsService {
             sampleSize: params.sampleSize,
             avgConfidence: params.avgConfidence,
             tendencyHitRate: params.tendencyHitRate,
-            lambda: params.lambda,
+            temperature: params.temperature,
             applied: params.applied,
+            baselineBrier: params.baselineBrier,
+            calibratedBrier: params.calibratedBrier,
           }
         : null,
       items: outcomes.map((o) => this.toItem(o)),

@@ -101,16 +101,24 @@ export type MatchPredictionDto = {
   report?: AiReportDto | null;
   sourceUpdatedAt?: string | null;
   /**
-   * Program-rule calibrated probabilities (0-100, summing to 100), scaled by
-   * the measured over/under-confidence of past REAL pre-kickoff predictions.
-   * null until enough settled samples exist. Raw values above stay untouched.
+   * Program-rule calibrated probabilities (0-100, summing to 100): temperature
+   * scaling fitted on past REAL pre-kickoff predictions, plus a shrunk
+   * per-team bias tilt. null until enough settled samples exist. Raw values
+   * above stay untouched.
    */
   calibrated?: {
+    method: 'temperature+team-bias';
     homeWinProbability: number;
     drawProbability: number;
     awayWinProbability: number;
-    lambda: number;
+    /** Fitted softmax temperature; > 1 = model has been overconfident. */
+    temperature: number;
     sampleSize: number;
+    /** Applied log-odds shift on the home team's win probability; null when 0. */
+    homeBiasAdjustment?: number | null;
+    awayBiasAdjustment?: number | null;
+    /** likelyScorelines re-scaled to agree with the calibrated 1X2 above. */
+    scorelines?: { score: string; probability: number }[] | null;
   } | null;
 };
 
@@ -289,8 +297,12 @@ export type PredictionInsightsDto = {
     sampleSize: number;
     avgConfidence: number;
     tendencyHitRate: number;
-    lambda: number;
+    /** Fitted softmax temperature; > 1 = model has been overconfident. */
+    temperature: number;
     applied: boolean;
+    /** In-sample backtest: mean multi-class Brier before/after temperature scaling. */
+    baselineBrier: number | null;
+    calibratedBrier: number | null;
   } | null;
   /** Newest kickoff first. */
   items: PredictionOutcomeItemDto[];

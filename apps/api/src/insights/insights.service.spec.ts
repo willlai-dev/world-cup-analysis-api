@@ -6,15 +6,23 @@ const CAL_PARAMS = {
   sampleSize: 12,
   avgConfidence: 0.55,
   tendencyHitRate: 0.5,
-  lambda: 0.91,
+  temperature: 1.21,
   applied: true,
+  baselineBrier: 0.68,
+  calibratedBrier: 0.63,
 };
 
 function buildService(rows: unknown[], params: unknown = CAL_PARAMS) {
   const prisma = {
     matchPredictionOutcome: { findMany: jest.fn().mockResolvedValue(rows) },
   };
-  const calibration = { getParams: jest.fn().mockResolvedValue(params) };
+  const calibration = {
+    getBundle: jest.fn().mockResolvedValue({
+      tendency: params,
+      teamBias: new Map<string, number>(),
+      scoreline: null,
+    }),
+  };
   return new InsightsService(
     prisma as unknown as PrismaService,
     calibration as unknown as CalibrationService,
@@ -109,7 +117,13 @@ describe('InsightsService.getPredictionInsights', () => {
       likelyScorelines: [{ score: '2-1', probability: 30 }],
       retro: false,
     });
-    expect(dto.calibration).toMatchObject({ lambda: 0.91, applied: true, sampleSize: 12 });
+    expect(dto.calibration).toMatchObject({
+      temperature: 1.21,
+      applied: true,
+      sampleSize: 12,
+      baselineBrier: 0.68,
+      calibratedBrier: 0.63,
+    });
   });
 
   it('computes per-team over/under-performance from both sides of a match', async () => {

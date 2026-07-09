@@ -3,7 +3,7 @@ import {
   AiEntityType,
   AiReportStatus,
   MatchStatus,
-  type Prisma,
+  Prisma,
 } from "@prisma/client";
 import {
   type GenerationResult,
@@ -22,7 +22,7 @@ import type {
 } from "../common/dto/contracts";
 import { CalibrationService } from "../insights/calibration.service";
 import { applyTendencyCalibration } from "../insights/prediction-calibration";
-import { calibrateScorelines } from "../insights/scoreline-calibration";
+import { buildProgramScorelines } from "../insights/scoreline-model";
 import { toAiReportDto, toMatchSummary } from "../mappers";
 import { PrismaService } from "../prisma/prisma.service";
 import type { ListMatchesQueryDto } from "./dto/list-matches-query.dto";
@@ -31,7 +31,9 @@ import { parsePredictionSnapshot, scorePrediction } from "./prediction-scoring";
 // Bump when the match-analysis prompt/schema changes so runReportIfChanged
 // regenerates existing analyses (the context hash changes with it).
 // v3: context gains predictionTrack (recent hit rate + per-team bias feedback).
-const MATCH_ANALYSIS_VERSION = 3;
+// v4: scoreline guidance (anchor on common football scores) + exact-score
+//     track record fed back via predictionTrack.recent.
+const MATCH_ANALYSIS_VERSION = 4;
 
 // Report types that count as a "real" pre-match prediction when settling.
 const PRE_MATCH_REPORT_TYPES = ["MATCH_PREDICTION", "MATCH_ANALYSIS"];
@@ -238,15 +240,22 @@ export class MatchesService {
 
     // Phase 3: error feedback — recent real-prediction performance + per-team
     // predicted-vs-actual bias, computed once per run and fed to every prompt.
-    const [{ tendency: calibration }, teamTrack] = await Promise.all([
+    const [bundle, teamTrack] = await Promise.all([
       this.calibration.getBundle(),
       this.buildTeamTrack(),
     ]);
+    const calibration = bundle.tendency;
     const recentTrack = calibration
       ? {
           sampleSize: calibration.sampleSize,
           tendencyHitRate: round2(calibration.tendencyHitRate),
           avgConfidence: round2(calibration.avgConfidence),
+          exactScoreHitRate: bundle.scoreTrack
+            ? round2(bundle.scoreTrack.exactScoreHitRate)
+            : null,
+          top3ScoreHitRate: bundle.scoreTrack
+            ? round2(bundle.scoreTrack.top3ScoreHitRate)
+            : null,
         }
       : null;
 
@@ -278,7 +287,9 @@ export class MatchesService {
           "keyPlayers[{playerName,teamName,reason}]、prediction{homeWinLean,drawLean,awayWinLean(0-100),explanation}、" +
           'likelyScorelines(最可能的三種比分,格式 [{score:"主-客" 例如 "2-1", probability:0-100}],三筆機率遞減)、' +
           "risks[]、dataLimitations[]。勝負只能表述為傾向,不可保證。" +
+          "比分預測請優先考慮足球常見比分(1-0、2-1、1-1、2-0、0-0),除非分析有強烈理由,不要給出總進球數 ≥ 4 的冷門比分。" +
           "context.predictionTrack 是本系統過往預測的表現回饋:recent.avgConfidence 高於 tendencyHitRate 代表近期預測過度自信,請把傾向數字收斂得更保守;" +
+          "recent.exactScoreHitRate 是過往比分完全命中率,偏低代表比分預測應更貼近常見比分;" +
           "home/away 的 overPerformed/underPerformed 代表該隊過去實際表現優於/劣於預測的次數,請據此微調對該隊的評估。",
         context,
         scope: `賽事：${m.homeTeam.nameEn} vs ${m.awayTeam.nameEn}`,
@@ -480,6 +491,10 @@ export class MatchesService {
     let noPrediction = 0;
     let failed = 0;
 
+    // Fitted once per run (not per match) — program scorelines below use the
+    // params as of this settlement run.
+    const bundle = await this.calibration.getBundle();
+
     for (const m of matches) {
       scanned += 1;
       try {
@@ -528,6 +543,47 @@ export class MatchesService {
         }
 
         const metrics = scorePrediction(snapshot, m.homeScore!, m.awayScore!);
+
+        // Program-blend scorelines, settled alongside the raw AI ones as an
+        // A/B comparison. Rolling-parameter backtest: only pre-kickoff inputs,
+        // but with the calibration params as fitted at settlement time.
+        let programScorelines: Prisma.InputJsonValue | typeof Prisma.DbNull =
+          Prisma.DbNull;
+        let programExactScoreHit: boolean | null = null;
+        let programTop3ScoreHit: boolean | null = null;
+        const rawOutcome = normalizeLeans(
+          snapshot.homeWinLean,
+          snapshot.drawLean,
+          snapshot.awayWinLean,
+        );
+        if (rawOutcome) {
+          const tempered = applyTendencyCalibration(
+            bundle.tendency,
+            snapshot.homeWinLean,
+            snapshot.drawLean,
+            snapshot.awayWinLean,
+          );
+          const program = buildProgramScorelines(
+            snapshot.likelyScorelines,
+            rawOutcome,
+            tempered
+              ? {
+                  home: tempered.homeWinProbability,
+                  draw: tempered.drawProbability,
+                  away: tempered.awayWinProbability,
+                }
+              : rawOutcome,
+            bundle.scoreline,
+            bundle.scorelineBlend,
+          );
+          if (program && program.length > 0) {
+            const actualKey = `${m.homeScore!}-${m.awayScore!}`;
+            programScorelines = program as unknown as Prisma.InputJsonValue;
+            programExactScoreHit = program[0].score === actualKey;
+            programTop3ScoreHit = program.some((s) => s.score === actualKey);
+          }
+        }
+
         const fields = {
           reportId: report.id,
           retro,
@@ -544,6 +600,9 @@ export class MatchesService {
           exactScoreHit: metrics.exactScoreHit,
           top3ScoreHit: metrics.top3ScoreHit,
           brierScore: metrics.brierScore,
+          programScorelines,
+          programExactScoreHit,
+          programTop3ScoreHit,
         };
         await this.prisma.matchPredictionOutcome.upsert({
           where: { matchId: m.id },
@@ -622,7 +681,7 @@ export class MatchesService {
       awayShift,
     );
     const calibratedScorelines = scaled
-      ? calibrateScorelines(
+      ? buildProgramScorelines(
           likelyScorelines,
           normalizeLeans(homeWinLean, drawLean, awayWinLean),
           {
@@ -631,6 +690,7 @@ export class MatchesService {
             away: scaled.awayWinProbability,
           },
           bundle.scoreline,
+          bundle.scorelineBlend,
         )
       : null;
 

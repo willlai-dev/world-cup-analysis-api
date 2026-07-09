@@ -338,6 +338,14 @@ model MatchPredictionOutcome {
   /// Multi-class Brier score over normalized leans (0 best, 2 worst); null when leans missing.
   brierScore Float?
 
+  /// Program-blend (Poisson × AI) scoreline snapshot + hits, settled alongside
+  /// the raw AI scorelines as an A/B comparison. Rolling-parameter backtest:
+  /// built from pre-kickoff information only, but with calibration params as
+  /// fitted at settlement time. Null when the snapshot's leans are unusable.
+  programScorelines    Json?
+  programExactScoreHit Boolean?
+  programTop3ScoreHit  Boolean?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

@@ -115,6 +115,10 @@ export class InsightsService {
       exactScoreHit: o.exactScoreHit,
       top3ScoreHit: o.top3ScoreHit,
       brierScore: o.brierScore,
+      programScorelines:
+        o.programExactScoreHit !== null ? parseScorelines(o.programScorelines) : null,
+      programExactScoreHit: o.programExactScoreHit,
+      programTop3ScoreHit: o.programTop3ScoreHit,
     };
   }
 }
@@ -128,6 +132,12 @@ function bucket(list: MatchPredictionOutcome[]): PredictionInsightsBucketDto {
     .map((o) => o.brierScore)
     .filter((b): b is number => b !== null);
   const rate = (n: number) => (total > 0 ? n / total : null);
+  // Program-blend A/B: only rows that actually carry program metrics count.
+  const programRows = list.filter((o) => o.programExactScoreHit !== null);
+  const programTotal = programRows.length;
+  const programExactScoreHits = programRows.filter((o) => o.programExactScoreHit).length;
+  const programTop3ScoreHits = programRows.filter((o) => o.programTop3ScoreHit).length;
+  const programRate = (n: number) => (programTotal > 0 ? n / programTotal : null);
   return {
     total,
     tendencyHits,
@@ -137,6 +147,11 @@ function bucket(list: MatchPredictionOutcome[]): PredictionInsightsBucketDto {
     top3ScoreHits,
     top3ScoreHitRate: rate(top3ScoreHits),
     avgBrier: briers.length > 0 ? briers.reduce((a, b) => a + b, 0) / briers.length : null,
+    programTotal,
+    programExactScoreHits,
+    programExactScoreHitRate: programRate(programExactScoreHits),
+    programTop3ScoreHits,
+    programTop3ScoreHitRate: programRate(programTop3ScoreHits),
   };
 }
 

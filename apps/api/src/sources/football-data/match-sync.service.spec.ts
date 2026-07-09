@@ -145,6 +145,38 @@ describe('MatchSyncService', () => {
     );
   });
 
+  it('clears a stale winner when the source no longer reports one', async () => {
+    const { service, prisma, client } = build();
+    client.hasKey.mockReturnValue(true);
+    prisma.team.findMany.mockResolvedValue([
+      { id: 'team-bra', externalId: '764', fifaCode: 'BRA' },
+      { id: 'team-arg', externalId: '762', fifaCode: 'ARG' },
+    ]);
+    client.getCompetitionMatches.mockResolvedValue([
+      {
+        id: 5006,
+        utcDate: '2026-06-22T18:00:00Z',
+        status: 'FINISHED',
+        stage: 'GROUP_STAGE',
+        homeTeam: { id: 764, tla: 'BRA' },
+        awayTeam: { id: 762, tla: 'ARG' },
+        // Source corrected the match to a draw — no winner anymore.
+        score: { winner: null, fullTime: { home: 1, away: 1 } },
+      },
+    ]);
+    prisma.match.findUnique.mockResolvedValue({ id: 'db-5006' });
+
+    await service.syncResults();
+
+    // The update path must write null (not undefined) so the stale winner
+    // stored from an earlier sync is actually cleared.
+    expect(prisma.match.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ winnerTeamId: null }),
+      }),
+    );
+  });
+
   it('counts a match as failed when a team cannot be resolved', async () => {
     const { service, prisma, client } = build();
     client.hasKey.mockReturnValue(true);

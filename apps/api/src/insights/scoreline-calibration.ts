@@ -135,8 +135,10 @@ function bucketOf(outcome: OutcomeProbabilities, tendency: Tendency): number {
 /**
  * Calibrates one prediction's scorelines against its calibrated 1X2
  * probabilities. Works without fitted params too (b = 0) — consistency with
- * the calibrated tendency probabilities always applies. Malformed entries
- * are dropped; returns null when nothing survives.
+ * the calibrated tendency probabilities always applies: the scorelines of one
+ * tendency bucket never sum past that bucket's calibrated probability (so the
+ * whole list can never exceed 100 either). Malformed entries are dropped;
+ * returns null when nothing survives.
  */
 export function calibrateScorelines(
   raw: { score: string; probability: number | null }[],
@@ -145,7 +147,7 @@ export function calibrateScorelines(
   params: ScorelineCalibrationParams | null,
 ): { score: string; probability: number }[] | null {
   const intercept = params?.applied ? params.intercept : 0;
-  const result: { score: string; probability: number }[] = [];
+  const entries: { score: string; tendency: Tendency; p: number }[] = [];
   for (const item of raw) {
     if (item.probability === null || !Number.isFinite(item.probability)) continue;
     const parsed = parseScoreline(item.score);
@@ -158,17 +160,30 @@ export function calibrateScorelines(
         ? clampClaim(item.probability)
         : sigmoid(logit(clampClaim(item.probability)) + intercept);
 
-    // 2. Rescale into the calibrated tendency bucket, capped by it — keeps
-    //    P(score | bucket) shape while aligning the margins with the 1X2.
+    // 2. Rescale into the calibrated tendency bucket — keeps P(score | bucket)
+    //    shape while aligning the margins with the calibrated 1X2.
     const rawBucket = rawOutcome ? bucketOf(rawOutcome, tendency) : 0;
     const calBucket = bucketOf(calibratedOutcome, tendency);
     const factor = rawBucket > 0 ? calBucket / rawBucket : 1;
-    const capped = Math.min(recalibrated * factor, calBucket / 100);
-
-    result.push({ score: item.score, probability: round1(capped * 100) });
+    entries.push({ score: item.score, tendency, p: recalibrated * factor });
   }
-  if (result.length === 0) return null;
-  return result.sort((a, b) => b.probability - a.probability);
+  if (entries.length === 0) return null;
+
+  // 3. Bucket-level cap: if a bucket's scorelines sum past its calibrated
+  //    probability, scale them down proportionally (preserves their relative
+  //    shape and implies each single scoreline stays ≤ its bucket too).
+  const bucketSums = new Map<Tendency, number>();
+  for (const e of entries) {
+    bucketSums.set(e.tendency, (bucketSums.get(e.tendency) ?? 0) + e.p);
+  }
+  return entries
+    .map((e) => {
+      const calBucket = bucketOf(calibratedOutcome, e.tendency) / 100;
+      const sum = bucketSums.get(e.tendency)!;
+      const scale = sum > calBucket && sum > 0 ? calBucket / sum : 1;
+      return { score: e.score, probability: round1(e.p * scale * 100) };
+    })
+    .sort((a, b) => b.probability - a.probability);
 }
 
 function round1(n: number): number {

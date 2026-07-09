@@ -106,6 +106,27 @@ describe('calibrateScorelines', () => {
     expect(out).toEqual([{ score: '2-1', probability: 40 }]);
   });
 
+  it('scales same-bucket scorelines proportionally so their sum stays within the bucket', () => {
+    const out = calibrateScorelines(
+      [
+        { score: '2-1', probability: 40 }, // HOME
+        { score: '1-0', probability: 30 }, // HOME
+      ],
+      rawOutcome,
+      calibratedOutcome,
+      null,
+    )!;
+    // ×(40/50): 32 + 24 = 56 > home bucket 40 → both ×(40/56).
+    expect(out).toEqual([
+      { score: '2-1', probability: 22.9 },
+      { score: '1-0', probability: 17.1 },
+    ]);
+    const total = out.reduce((acc, s) => acc + s.probability, 0);
+    expect(total).toBeLessThanOrEqual(calibratedOutcome.home);
+    // Relative shape preserved (40:30 ratio).
+    expect(out[0].probability / out[1].probability).toBeCloseTo(40 / 30, 1);
+  });
+
   it('applies the fitted intercept before the consistency rescale', () => {
     const out = calibrateScorelines(
       [{ score: '2-1', probability: 30 }],

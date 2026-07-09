@@ -266,8 +266,6 @@ export class MatchSyncService {
     homeTeamId: string,
     awayTeamId: string,
   ): Prisma.MatchUncheckedCreateInput {
-    const winnerTeamId =
-      deriveWinnerTeamId(m, homeTeamId, awayTeamId) ?? undefined;
     return {
       homeTeamId,
       awayTeamId,
@@ -275,9 +273,13 @@ export class MatchSyncService {
       status: mapStatus(m.status),
       stage: mapStage(m.stage),
       groupName: m.group ?? undefined,
-      homeScore: m.score?.fullTime?.home ?? undefined,
-      awayScore: m.score?.fullTime?.away ?? undefined,
-      winnerTeamId,
+      // Volatile fields mirror the source with explicit nulls (never
+      // undefined) so the upsert's update path clears stale values when the
+      // source retracts them — e.g. a corrected winner must not linger and
+      // skew elimination derivation.
+      homeScore: m.score?.fullTime?.home ?? null,
+      awayScore: m.score?.fullTime?.away ?? null,
+      winnerTeamId: deriveWinnerTeamId(m, homeTeamId, awayTeamId),
       sourceUpdatedAt: m.lastUpdated ? new Date(m.lastUpdated) : new Date(),
     };
   }

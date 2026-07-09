@@ -75,6 +75,27 @@ function outcomeFromPmfs(
   return { home: h / total, draw: d / total, away: a / total };
 }
 
+// The λ grid, its PMFs and each (λh, λa) pair's implied 1X2 are deterministic
+// constants — computed once and reused, since fitBlendWeight calls
+// fitPoissonRates once per historical row on every bundle refresh.
+const LAMBDAS: number[] = (() => {
+  const arr: number[] = [];
+  for (let l = LAMBDA_MIN; l <= LAMBDA_MAX + 1e-9; l += LAMBDA_STEP) {
+    arr.push(Math.round(l * 100) / 100);
+  }
+  return arr;
+})();
+const LAMBDA_PMFS = LAMBDAS.map((l) => poissonPmf(l, POISSON_MAX_GOALS));
+let lambdaOutcomeTable:
+  | { home: number; draw: number; away: number }[][]
+  | null = null;
+function getLambdaOutcomeTable() {
+  lambdaOutcomeTable ??= LAMBDAS.map((_, i) =>
+    LAMBDAS.map((_, j) => outcomeFromPmfs(LAMBDA_PMFS[i], LAMBDA_PMFS[j])),
+  );
+  return lambdaOutcomeTable;
+}
+
 /**
  * Fits (λ_home, λ_away) to target 1X2 probabilities (0-100) by grid search:
  * squared error on the grid-implied 1X2 plus a mild pull of the total-goals
@@ -90,18 +111,13 @@ export function fitPoissonRates(target: OutcomeProbabilities): {
       ? { home: target.home / sum, draw: target.draw / sum, away: target.away / sum }
       : { home: 1 / 3, draw: 1 / 3, away: 1 / 3 };
 
-  const lambdas: number[] = [];
-  for (let l = LAMBDA_MIN; l <= LAMBDA_MAX + 1e-9; l += LAMBDA_STEP) {
-    lambdas.push(Math.round(l * 100) / 100);
-  }
-  const pmfs = lambdas.map((l) => poissonPmf(l, POISSON_MAX_GOALS));
-
+  const outcomes = getLambdaOutcomeTable();
   let best = { lambdaHome: 1.3, lambdaAway: 1.3 };
   let bestLoss = Number.POSITIVE_INFINITY;
-  for (let i = 0; i < lambdas.length; i += 1) {
-    for (let j = 0; j < lambdas.length; j += 1) {
-      const o = outcomeFromPmfs(pmfs[i], pmfs[j]);
-      const mu = lambdas[i] + lambdas[j];
+  for (let i = 0; i < LAMBDAS.length; i += 1) {
+    for (let j = 0; j < LAMBDAS.length; j += 1) {
+      const o = outcomes[i][j];
+      const mu = LAMBDAS[i] + LAMBDAS[j];
       const loss =
         (o.home - t.home) ** 2 +
         (o.draw - t.draw) ** 2 +
@@ -109,7 +125,7 @@ export function fitPoissonRates(target: OutcomeProbabilities): {
         TOTAL_GOALS_REG * (mu - TOTAL_GOALS_ANCHOR) ** 2;
       if (loss < bestLoss - 1e-12) {
         bestLoss = loss;
-        best = { lambdaHome: lambdas[i], lambdaAway: lambdas[j] };
+        best = { lambdaHome: LAMBDAS[i], lambdaAway: LAMBDAS[j] };
       }
     }
   }
@@ -319,9 +335,11 @@ export function buildProgramScorelines(
     candidates.set(score, (candidates.get(score) ?? 0) + weight * p);
   }
 
+  // Deterministic ranking: score key breaks probability ties, so the top-1
+  // (which drives exact-score hit metrics) never depends on insertion order.
   const top = [...candidates.entries()]
     .filter(([, p]) => p > 0)
-    .sort((a, b) => b[1] - a[1])
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .slice(0, PROGRAM_TOP_K)
     .map(([score, p]) => {
       const parsed = parseScoreline(score)!;

@@ -198,7 +198,8 @@ export function applyBucketCap(
       const scale = sum > calBucket && sum > 0 ? calBucket / sum : 1;
       return { score: e.score, probability: round1(e.p * scale * 100) };
     })
-    .sort((a, b) => b.probability - a.probability);
+    // Score key breaks rounded-probability ties for a stable, reproducible order.
+    .sort((a, b) => b.probability - a.probability || a.score.localeCompare(b.score));
 }
 
 function round1(n: number): number {

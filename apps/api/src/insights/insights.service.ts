@@ -115,8 +115,10 @@ export class InsightsService {
       exactScoreHit: o.exactScoreHit,
       top3ScoreHit: o.top3ScoreHit,
       brierScore: o.brierScore,
+      // Gate on the JSON column itself so the DTO stays correct even if a
+      // partial write ever leaves the nullable booleans inconsistent.
       programScorelines:
-        o.programExactScoreHit !== null ? parseScorelines(o.programScorelines) : null,
+        o.programScorelines != null ? parseScorelines(o.programScorelines) : null,
       programExactScoreHit: o.programExactScoreHit,
       programTop3ScoreHit: o.programTop3ScoreHit,
     };

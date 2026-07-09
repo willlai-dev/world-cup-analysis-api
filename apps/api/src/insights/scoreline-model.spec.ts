@@ -148,6 +148,20 @@ describe('buildProgramScorelines', () => {
     expect(out.map((s) => s.score)).not.toContain('4-3');
   });
 
+  it('breaks probability ties deterministically by score key', () => {
+    const out = buildProgramScorelines(
+      [
+        { score: '2-1', probability: 20 },
+        { score: '1-0', probability: 20 }, // same bucket, same probability
+      ],
+      outcome,
+      outcome,
+      null,
+      { weight: 1, sampleSize: 20, applied: true },
+    )!;
+    expect(out.map((s) => s.score)).toEqual(['1-0', '2-1']);
+  });
+
   it('blends both sources, sorted descending and bucket-capped', () => {
     const out = buildProgramScorelines(aiList, outcome, outcome, null, {
       weight: 0.5,

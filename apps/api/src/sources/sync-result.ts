@@ -8,6 +8,8 @@ export type SyncResult = {
   created?: number;
   updated?: number;
   failed?: number;
-  /** Teams marked eliminated this run (match sync, knockout losers). */
+  /** Teams newly marked eliminated this run (match sync recompute). */
   eliminated?: number;
+  /** Teams whose stale eliminated flag was cleared this run (match sync recompute). */
+  reinstated?: number;
 };

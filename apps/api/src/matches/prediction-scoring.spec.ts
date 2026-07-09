@@ -38,6 +38,23 @@ describe('parsePredictionSnapshot', () => {
     expect(snapshot).toMatchObject({ homeWinLean: null, drawLean: null, awayWinLean: null });
   });
 
+  it('sorts scorelines by probability (nulls last) before taking the top 3', () => {
+    const snapshot = parsePredictionSnapshot({
+      prediction: { homeWinLean: 55, drawLean: 25, awayWinLean: 20 },
+      likelyScorelines: [
+        { score: '0-0' }, // no probability → last
+        { score: '1-1', probability: 25 },
+        { score: '2-1', probability: 30 },
+        { score: '1-0', probability: 20 },
+      ],
+    });
+    expect(snapshot?.likelyScorelines).toEqual([
+      { score: '2-1', probability: 30 },
+      { score: '1-1', probability: 25 },
+      { score: '1-0', probability: 20 },
+    ]);
+  });
+
   it('returns null when there is nothing scoreable', () => {
     expect(parsePredictionSnapshot(null)).toBeNull();
     expect(parsePredictionSnapshot('oops')).toBeNull();

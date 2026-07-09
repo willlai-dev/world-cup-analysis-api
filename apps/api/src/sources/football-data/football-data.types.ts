@@ -32,7 +32,10 @@ export type FdMatch = {
   awayTeam: FdMatchTeamRef;
   score?: {
     winner?: string | null;
+    /** REGULAR | EXTRA_TIME | PENALTY_SHOOTOUT */
+    duration?: string | null;
     fullTime?: { home?: number | null; away?: number | null };
+    penalties?: { home?: number | null; away?: number | null };
   } | null;
   lastUpdated?: string | null;
 };

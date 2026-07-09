@@ -21,7 +21,8 @@ import type {
   MatchSummary,
 } from "../common/dto/contracts";
 import { CalibrationService } from "../insights/calibration.service";
-import { applyCalibration } from "../insights/prediction-calibration";
+import { applyTendencyCalibration } from "../insights/prediction-calibration";
+import { calibrateScorelines } from "../insights/scoreline-calibration";
 import { toAiReportDto, toMatchSummary } from "../mappers";
 import { PrismaService } from "../prisma/prisma.service";
 import type { ListMatchesQueryDto } from "./dto/list-matches-query.dto";
@@ -98,6 +99,20 @@ const matchInclude = {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/** Raw leans normalized to 0-100 outcome probabilities; null when unusable. */
+function normalizeLeans(
+  home: number | null,
+  draw: number | null,
+  away: number | null,
+): { home: number; draw: number; away: number } | null {
+  const h = home ?? 0;
+  const d = draw ?? 0;
+  const a = away ?? 0;
+  const sum = h + d + a;
+  if (sum <= 0) return null;
+  return { home: (h / sum) * 100, draw: (d / sum) * 100, away: (a / sum) * 100 };
 }
 
 @Injectable()
@@ -223,8 +238,8 @@ export class MatchesService {
 
     // Phase 3: error feedback — recent real-prediction performance + per-team
     // predicted-vs-actual bias, computed once per run and fed to every prompt.
-    const [calibration, teamTrack] = await Promise.all([
-      this.calibration.getParams(),
+    const [{ tendency: calibration }, teamTrack] = await Promise.all([
+      this.calibration.getBundle(),
       this.buildTeamTrack(),
     ]);
     const recentTrack = calibration
@@ -479,22 +494,16 @@ export class MatchesService {
           orderBy: { createdAt: "desc" },
           select: { id: true, createdAt: true, structuredJson: true },
         });
-        let report =
-          preMatch ??
-          (await this.prisma.aiReport.findFirst({
-            where: {
-              entityType: AiEntityType.MATCH,
-              entityId: m.id,
-              status: AiReportStatus.DONE,
-              reportType: RETRO_REPORT_TYPE,
-            },
-            orderBy: { createdAt: "desc" },
-            select: { id: true, createdAt: true, structuredJson: true },
-          }));
-
-        let snapshot = report ? parsePredictionSnapshot(report.structuredJson) : null;
-        if (preMatch && report === preMatch && !snapshot) {
-          const retro = await this.prisma.aiReport.findFirst({
+        // Prefer the real pre-kickoff report, but only if it is actually
+        // scoreable — an unscoreable one (e.g. mock all-zero leans) falls
+        // back to a retro report rather than leaving the match unsettled.
+        let report = preMatch;
+        let snapshot = preMatch
+          ? parsePredictionSnapshot(preMatch.structuredJson)
+          : null;
+        let retro = false;
+        if (!snapshot) {
+          const retroReport = await this.prisma.aiReport.findFirst({
             where: {
               entityType: AiEntityType.MATCH,
               entityId: m.id,
@@ -504,13 +513,15 @@ export class MatchesService {
             orderBy: { createdAt: "desc" },
             select: { id: true, createdAt: true, structuredJson: true },
           });
-          const retroSnapshot = retro ? parsePredictionSnapshot(retro.structuredJson) : null;
-          if (retro && retroSnapshot) {
-            report = retro;
+          const retroSnapshot = retroReport
+            ? parsePredictionSnapshot(retroReport.structuredJson)
+            : null;
+          if (retroSnapshot) {
+            report = retroReport;
             snapshot = retroSnapshot;
+            retro = true;
           }
         }
-
         if (!report || !snapshot) {
           noPrediction += 1;
           continue;
@@ -519,7 +530,7 @@ export class MatchesService {
         const metrics = scorePrediction(snapshot, m.homeScore!, m.awayScore!);
         const fields = {
           reportId: report.id,
-          retro: !preMatch || report.id !== preMatch.id,
+          retro,
           predictedAt: report.createdAt,
           homeWinLean: snapshot.homeWinLean,
           drawLean: snapshot.drawLean,
@@ -594,21 +605,40 @@ export class MatchesService {
       .slice(0, 3)
       .map((s) => ({ score: s.score, probability: s.probability ?? null }));
 
-    // Phase 3: calibrated probabilities from the measured over/under-confidence
-    // of past real predictions. Raw leans stay untouched above.
-    const params = await this.calibration.getParams();
-    const scaled = applyCalibration(
-      params,
-      structured?.prediction?.homeWinLean ?? null,
-      structured?.prediction?.drawLean ?? null,
-      structured?.prediction?.awayWinLean ?? null,
+    // Calibrated probabilities: temperature scaling fitted on past real
+    // predictions plus a shrunk per-team bias tilt. Raw leans stay untouched.
+    const homeWinLean = structured?.prediction?.homeWinLean ?? null;
+    const drawLean = structured?.prediction?.drawLean ?? null;
+    const awayWinLean = structured?.prediction?.awayWinLean ?? null;
+    const bundle = await this.calibration.getBundle();
+    const homeShift = bundle.teamBias.get(match.homeTeamId) ?? 0;
+    const awayShift = bundle.teamBias.get(match.awayTeamId) ?? 0;
+    const scaled = applyTendencyCalibration(
+      bundle.tendency,
+      homeWinLean,
+      drawLean,
+      awayWinLean,
+      homeShift,
+      awayShift,
     );
+    const calibratedScorelines = scaled
+      ? calibrateScorelines(
+          likelyScorelines,
+          normalizeLeans(homeWinLean, drawLean, awayWinLean),
+          {
+            home: scaled.homeWinProbability,
+            draw: scaled.drawProbability,
+            away: scaled.awayWinProbability,
+          },
+          bundle.scoreline,
+        )
+      : null;
 
     return {
       matchId,
-      homeWinProbability: structured?.prediction?.homeWinLean ?? null,
-      drawProbability: structured?.prediction?.drawLean ?? null,
-      awayWinProbability: structured?.prediction?.awayWinLean ?? null,
+      homeWinProbability: homeWinLean,
+      drawProbability: drawLean,
+      awayWinProbability: awayWinLean,
       likelyScorelines,
       keyFactors: structured?.keyFactors ?? [],
       riskNotes: structured?.risks ?? [],
@@ -617,11 +647,15 @@ export class MatchesService {
         ? match.sourceUpdatedAt.toISOString()
         : null,
       calibrated:
-        scaled && params
+        scaled && bundle.tendency
           ? {
+              method: "temperature+team-bias" as const,
               ...scaled,
-              lambda: round2(params.lambda),
-              sampleSize: params.sampleSize,
+              temperature: round2(bundle.tendency.temperature),
+              sampleSize: bundle.tendency.sampleSize,
+              homeBiasAdjustment: homeShift !== 0 ? round2(homeShift) : null,
+              awayBiasAdjustment: awayShift !== 0 ? round2(awayShift) : null,
+              scorelines: calibratedScorelines,
             }
           : null,
     };

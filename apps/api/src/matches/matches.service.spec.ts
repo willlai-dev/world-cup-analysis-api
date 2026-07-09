@@ -10,7 +10,13 @@ describe('MatchesService.generateAnalyses', () => {
       matchPredictionOutcome: { findMany: jest.fn().mockResolvedValue([]) },
     };
     const router = { runReportIfChanged: jest.fn() };
-    const calibration = { getParams: jest.fn().mockResolvedValue(null) };
+    const calibration = {
+      getBundle: jest.fn().mockResolvedValue({
+        tendency: null,
+        teamBias: new Map<string, number>(),
+        scoreline: null,
+      }),
+    };
     const service = new MatchesService(
       prisma as unknown as PrismaService,
       router as unknown as AiRouterService,
@@ -51,12 +57,18 @@ describe('MatchesService.generateAnalyses', () => {
   it('feeds prediction-track error feedback into the analysis context', async () => {
     const { service, prisma, router, calibration } = build();
     prisma.match.findMany.mockResolvedValue([{ ...match, homeTeamId: 't-bra', awayTeamId: 't-arg' }]);
-    calibration.getParams.mockResolvedValue({
-      sampleSize: 12,
-      avgConfidence: 0.58,
-      tendencyHitRate: 0.5,
-      lambda: 0.86,
-      applied: true,
+    calibration.getBundle.mockResolvedValue({
+      tendency: {
+        sampleSize: 12,
+        avgConfidence: 0.58,
+        tendencyHitRate: 0.5,
+        temperature: 1.18,
+        applied: true,
+        baselineBrier: 0.7,
+        calibratedBrier: 0.65,
+      },
+      teamBias: new Map<string, number>(),
+      scoreline: null,
     });
     prisma.matchPredictionOutcome.findMany.mockResolvedValue([
       {
@@ -102,7 +114,13 @@ function buildSettlement() {
     matchPredictionOutcome: { upsert: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
   };
   const router = { runReportIfChanged: jest.fn() };
-  const calibration = { getParams: jest.fn().mockResolvedValue(null) };
+  const calibration = {
+    getBundle: jest.fn().mockResolvedValue({
+      tendency: null,
+      teamBias: new Map<string, number>(),
+      scoreline: null,
+    }),
+  };
   const service = new MatchesService(
     prisma as unknown as PrismaService,
     router as unknown as AiRouterService,
@@ -199,61 +217,78 @@ describe('MatchesService.scorePredictions', () => {
 });
 
 describe('MatchesService.getPrediction (calibrated)', () => {
-  it('adds calibrated probabilities when calibration is applied', async () => {
+  const report = {
+    id: 'r1',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    entityType: 'MATCH',
+    reportType: 'MATCH_ANALYSIS',
+    provider: 'NVIDIA',
+    language: 'zh-TW',
+    status: 'DONE',
+    structuredJson: structured,
+  };
+  const tendencyParams = {
+    sampleSize: 12,
+    avgConfidence: 0.55,
+    tendencyHitRate: 0.5,
+    temperature: 1.5,
+    applied: true,
+    baselineBrier: 0.7,
+    calibratedBrier: 0.66,
+  };
+
+  it('adds calibrated probabilities, bias tilts and scorelines when applied', async () => {
     const { service, prisma, calibration } = buildSettlement();
-    prisma.match.findUnique.mockResolvedValue({ id: 'm1', sourceUpdatedAt: null });
-    prisma.aiReport.findFirst.mockResolvedValue({
-      id: 'r1',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      entityType: 'MATCH',
-      reportType: 'MATCH_ANALYSIS',
-      provider: 'NVIDIA',
-      language: 'zh-TW',
-      status: 'DONE',
-      structuredJson: structured,
+    prisma.match.findUnique.mockResolvedValue({
+      id: 'm1',
+      sourceUpdatedAt: null,
+      homeTeamId: 't-bra',
+      awayTeamId: 't-arg',
     });
-    calibration.getParams.mockResolvedValue({
-      sampleSize: 12,
-      avgConfidence: 0.55,
-      tendencyHitRate: 0.5,
-      lambda: 0.9,
-      applied: true,
+    prisma.aiReport.findFirst.mockResolvedValue(report);
+    calibration.getBundle.mockResolvedValue({
+      tendency: tendencyParams,
+      teamBias: new Map([['t-bra', 0.2]]),
+      scoreline: null,
     });
 
     const dto = await service.getPrediction('m1');
 
     expect(dto.homeWinProbability).toBe(55); // raw untouched
-    expect(dto.calibrated).toMatchObject({ lambda: 0.9, sampleSize: 12 });
+    expect(dto.calibrated).toMatchObject({
+      method: 'temperature+team-bias',
+      temperature: 1.5,
+      sampleSize: 12,
+      homeBiasAdjustment: 0.2,
+      awayBiasAdjustment: null,
+    });
     const c = dto.calibrated!;
-    // λ<1 pulls toward uniform: home shrinks below 55, all still sum to 100.
+    // T>1 pulls toward uniform: home shrinks below 55, all still sum to 100.
     expect(c.homeWinProbability).toBeLessThan(55);
     expect(c.homeWinProbability).toBeGreaterThan(100 / 3);
     expect(
       c.homeWinProbability + c.drawProbability + c.awayWinProbability,
     ).toBeCloseTo(100, 0);
+    // Scorelines re-aligned with the calibrated 1X2: home-win score shrinks too.
+    expect(c.scorelines).toHaveLength(2);
+    expect(c.scorelines![0].score).toBe('2-1');
+    expect(c.scorelines![0].probability).toBeLessThan(30);
   });
 
   it('returns calibrated=null while the sample is too small', async () => {
     const { service, prisma, calibration } = buildSettlement();
-    prisma.match.findUnique.mockResolvedValue({ id: 'm1', sourceUpdatedAt: null });
-    prisma.aiReport.findFirst.mockResolvedValue({
-      id: 'r1',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      entityType: 'MATCH',
-      reportType: 'MATCH_ANALYSIS',
-      provider: 'NVIDIA',
-      language: 'zh-TW',
-      status: 'DONE',
-      structuredJson: structured,
+    prisma.match.findUnique.mockResolvedValue({
+      id: 'm1',
+      sourceUpdatedAt: null,
+      homeTeamId: 't-bra',
+      awayTeamId: 't-arg',
     });
-    calibration.getParams.mockResolvedValue({
-      sampleSize: 3,
-      avgConfidence: 0.6,
-      tendencyHitRate: 0.66,
-      lambda: 1.1,
-      applied: false,
+    prisma.aiReport.findFirst.mockResolvedValue(report);
+    calibration.getBundle.mockResolvedValue({
+      tendency: { ...tendencyParams, sampleSize: 3, applied: false },
+      teamBias: new Map<string, number>(),
+      scoreline: null,
     });
 
     const dto = await service.getPrediction('m1');

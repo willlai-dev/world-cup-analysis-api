@@ -5,6 +5,7 @@ import type { SyncResult } from "../sync-result";
 import { SourceError } from "../http.util";
 import { FootballDataClient } from "./football-data.client";
 import type { FdMatch, FdMatchTeamRef } from "./football-data.types";
+import { deriveEliminatedTeamIds } from "./elimination";
 
 function mapStatus(status: string): MatchStatus {
   switch (status) {
@@ -43,6 +44,36 @@ function mapStage(stage?: string | null): MatchStage {
     default:
       return MatchStage.UNKNOWN;
   }
+}
+
+/**
+ * `score.winner` is authoritative (football-data sets it even for penalty
+ * shootouts); when it's absent but the full-time score is level and a
+ * penalty result exists, fall back to penalties so knockout losers still
+ * get a winner attributed.
+ */
+function deriveWinnerTeamId(
+  m: FdMatch,
+  homeTeamId: string,
+  awayTeamId: string,
+): string | null {
+  const winner = m.score?.winner;
+  if (winner === "HOME_TEAM") return homeTeamId;
+  if (winner === "AWAY_TEAM") return awayTeamId;
+
+  const full = m.score?.fullTime;
+  const pens = m.score?.penalties;
+  if (
+    full?.home != null &&
+    full?.away != null &&
+    full.home === full.away &&
+    pens?.home != null &&
+    pens?.away != null &&
+    pens.home !== pens.away
+  ) {
+    return pens.home > pens.away ? homeTeamId : awayTeamId;
+  }
+  return null;
 }
 
 type TeamResolver = (ref: FdMatchTeamRef) => string | null;
@@ -120,26 +151,28 @@ export class MatchSyncService {
       };
     }
 
-    const winner = fdMatch.score?.winner;
-    const winnerTeamId =
-      winner === "HOME_TEAM"
-        ? opts.homeTeamId
-        : winner === "AWAY_TEAM"
-          ? opts.awayTeamId
-          : null;
-
+    const status = mapStatus(fdMatch.status);
     await this.prisma.match.update({
       where: { id: opts.dbId },
       data: {
-        status: mapStatus(fdMatch.status),
+        status,
         homeScore: fdMatch.score?.fullTime?.home ?? null,
         awayScore: fdMatch.score?.fullTime?.away ?? null,
-        winnerTeamId,
+        winnerTeamId: deriveWinnerTeamId(
+          fdMatch,
+          opts.homeTeamId,
+          opts.awayTeamId,
+        ),
         sourceUpdatedAt: fdMatch.lastUpdated
           ? new Date(fdMatch.lastUpdated)
           : new Date(),
       },
     });
+
+    // A manual refresh that settles a match can change who is eliminated.
+    if (status === MatchStatus.FINISHED) {
+      await this.recomputeEliminations();
+    }
 
     return { refreshed: true };
   }
@@ -158,7 +191,6 @@ export class MatchSyncService {
     let created = 0;
     let updated = 0;
     let failed = 0;
-    const eliminated = new Set<string>();
 
     for (const m of matches) {
       const homeTeamId = resolve(m.homeTeam);
@@ -180,25 +212,9 @@ export class MatchSyncService {
       });
       if (existing) updated += 1;
       else created += 1;
-
-      // A finished knockout match eliminates the loser.
-      if (
-        data.status === MatchStatus.FINISHED &&
-        data.stage !== MatchStage.GROUP &&
-        data.winnerTeamId
-      ) {
-        eliminated.add(
-          data.winnerTeamId === homeTeamId ? awayTeamId : homeTeamId,
-        );
-      }
     }
 
-    if (eliminated.size > 0) {
-      await this.prisma.team.updateMany({
-        where: { id: { in: [...eliminated] } },
-        data: { isEliminated: true },
-      });
-    }
+    const { eliminated, reinstated } = await this.recomputeEliminations();
 
     return {
       source: "football-data",
@@ -206,8 +222,43 @@ export class MatchSyncService {
       created,
       updated,
       failed,
-      eliminated: eliminated.size,
+      eliminated,
+      reinstated,
     };
+  }
+
+  /**
+   * Recomputes the eliminated set from the full match table and applies it in
+   * both directions, so stale flags (e.g. from mis-staged matches) heal on
+   * every sync. When the derived set is empty, `notIn: []` matches every team
+   * and resets all flags to false — that is intentional: no matches means
+   * nobody has been eliminated.
+   */
+  private async recomputeEliminations(): Promise<{
+    eliminated: number;
+    reinstated: number;
+  }> {
+    const rows = await this.prisma.match.findMany({
+      select: {
+        stage: true,
+        status: true,
+        homeTeamId: true,
+        awayTeamId: true,
+        winnerTeamId: true,
+      },
+    });
+    const ids = [...deriveEliminatedTeamIds(rows)];
+    const [markEliminated, clearStale] = await this.prisma.$transaction([
+      this.prisma.team.updateMany({
+        where: { id: { in: ids }, isEliminated: false },
+        data: { isEliminated: true },
+      }),
+      this.prisma.team.updateMany({
+        where: { id: { notIn: ids }, isEliminated: true },
+        data: { isEliminated: false },
+      }),
+    ]);
+    return { eliminated: markEliminated.count, reinstated: clearStale.count };
   }
 
   private mapMatch(
@@ -215,13 +266,6 @@ export class MatchSyncService {
     homeTeamId: string,
     awayTeamId: string,
   ): Prisma.MatchUncheckedCreateInput {
-    const winner = m.score?.winner;
-    const winnerTeamId =
-      winner === "HOME_TEAM"
-        ? homeTeamId
-        : winner === "AWAY_TEAM"
-          ? awayTeamId
-          : undefined;
     return {
       homeTeamId,
       awayTeamId,
@@ -229,9 +273,13 @@ export class MatchSyncService {
       status: mapStatus(m.status),
       stage: mapStage(m.stage),
       groupName: m.group ?? undefined,
-      homeScore: m.score?.fullTime?.home ?? undefined,
-      awayScore: m.score?.fullTime?.away ?? undefined,
-      winnerTeamId,
+      // Volatile fields mirror the source with explicit nulls (never
+      // undefined) so the upsert's update path clears stale values when the
+      // source retracts them — e.g. a corrected winner must not linger and
+      // skew elimination derivation.
+      homeScore: m.score?.fullTime?.home ?? null,
+      awayScore: m.score?.fullTime?.away ?? null,
+      winnerTeamId: deriveWinnerTeamId(m, homeTeamId, awayTeamId),
       sourceUpdatedAt: m.lastUpdated ? new Date(m.lastUpdated) : new Date(),
     };
   }

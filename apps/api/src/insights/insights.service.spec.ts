@@ -68,6 +68,9 @@ function outcome(overrides: Record<string, unknown>) {
     exactScoreHit: true,
     top3ScoreHit: true,
     brierScore: 0.3,
+    programScorelines: [{ score: '2-1', probability: 22 }],
+    programExactScoreHit: true,
+    programTop3ScoreHit: true,
     match: {
       stage: 'GROUP',
       kickoffAt: new Date('2026-07-01T18:00:00Z'),
@@ -90,6 +93,10 @@ describe('InsightsService.getPredictionInsights', () => {
       top3ScoreHit: false,
       tendencyActual: 'AWAY',
       brierScore: 0.9,
+      // Unusable leans at settlement → no program prediction for this row.
+      programScorelines: null,
+      programExactScoreHit: null,
+      programTop3ScoreHit: null,
       match: {
         stage: 'ROUND_OF_16',
         kickoffAt: new Date('2026-07-04T18:00:00Z'),
@@ -107,6 +114,20 @@ describe('InsightsService.getPredictionInsights', () => {
     expect(dto.summary.overall).toMatchObject({ total: 2, tendencyHits: 1, tendencyHitRate: 0.5 });
     expect(dto.summary.real).toMatchObject({ total: 1, tendencyHitRate: 1, avgBrier: 0.3 });
     expect(dto.summary.retro).toMatchObject({ total: 1, tendencyHitRate: 0, avgBrier: 0.9 });
+    // Program A/B: only o1 carries program metrics — o2 (null fields) stays
+    // out of the program denominator.
+    expect(dto.summary.overall).toMatchObject({
+      programTotal: 1,
+      programExactScoreHits: 1,
+      programExactScoreHitRate: 1,
+      programTop3ScoreHitRate: 1,
+    });
+    expect(dto.summary.retro).toMatchObject({ programTotal: 0, programExactScoreHitRate: null });
+    expect(dto.items[0]).toMatchObject({
+      programScorelines: [{ score: '2-1', probability: 22 }],
+      programExactScoreHit: true,
+    });
+    expect(dto.items[1]).toMatchObject({ programScorelines: null, programExactScoreHit: null });
     // Stage buckets in chronological order of first kickoff.
     expect(dto.byStage.map((s) => s.stage)).toEqual(['GROUP', 'ROUND_OF_16']);
     expect(dto.items).toHaveLength(2);

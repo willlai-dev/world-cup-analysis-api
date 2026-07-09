@@ -87,6 +87,16 @@ function clampClaim(probability: number): number {
   return Math.min(CLAIM_MAX, Math.max(CLAIM_MIN, probability / 100));
 }
 
+/** Claimed probability (0-100) → intercept-recalibrated probability (0-1). */
+export function recalibrateClaim(
+  probability: number,
+  params: ScorelineCalibrationParams | null,
+): number {
+  const p = clampClaim(probability);
+  if (!params?.applied || params.intercept === 0) return p;
+  return sigmoid(logit(p) + params.intercept);
+}
+
 /**
  * Fits the intercept b by grid search maximizing Σ Bernoulli log-likelihood.
  * b < 0 → claimed scoreline probabilities have been too high overall.
@@ -126,7 +136,7 @@ export type OutcomeProbabilities = {
   away: number;
 };
 
-function bucketOf(outcome: OutcomeProbabilities, tendency: Tendency): number {
+export function bucketOf(outcome: OutcomeProbabilities, tendency: Tendency): number {
   if (tendency === 'HOME') return outcome.home;
   if (tendency === 'AWAY') return outcome.away;
   return outcome.draw;
@@ -146,7 +156,6 @@ export function calibrateScorelines(
   calibratedOutcome: OutcomeProbabilities,
   params: ScorelineCalibrationParams | null,
 ): { score: string; probability: number }[] | null {
-  const intercept = params?.applied ? params.intercept : 0;
   const entries: { score: string; tendency: Tendency; p: number }[] = [];
   for (const item of raw) {
     if (item.probability === null || !Number.isFinite(item.probability)) continue;
@@ -155,10 +164,7 @@ export function calibrateScorelines(
     const tendency = tendencyFromScore(parsed.home, parsed.away);
 
     // 1. Confidence recalibration on the claimed probability.
-    const recalibrated =
-      intercept === 0
-        ? clampClaim(item.probability)
-        : sigmoid(logit(clampClaim(item.probability)) + intercept);
+    const recalibrated = recalibrateClaim(item.probability, params);
 
     // 2. Rescale into the calibrated tendency bucket — keeps P(score | bucket)
     //    shape while aligning the margins with the calibrated 1X2.
@@ -168,10 +174,19 @@ export function calibrateScorelines(
     entries.push({ score: item.score, tendency, p: recalibrated * factor });
   }
   if (entries.length === 0) return null;
+  return applyBucketCap(entries, calibratedOutcome);
+}
 
-  // 3. Bucket-level cap: if a bucket's scorelines sum past its calibrated
-  //    probability, scale them down proportionally (preserves their relative
-  //    shape and implies each single scoreline stays ≤ its bucket too).
+/**
+ * Bucket-level cap: if a tendency bucket's scorelines sum past its calibrated
+ * probability, scale them down proportionally (preserves their relative shape
+ * and implies each single scoreline stays ≤ its bucket too). Returns the
+ * 0-100 rounded list, probability-descending.
+ */
+export function applyBucketCap(
+  entries: { score: string; tendency: Tendency; p: number }[],
+  calibratedOutcome: OutcomeProbabilities,
+): { score: string; probability: number }[] {
   const bucketSums = new Map<Tendency, number>();
   for (const e of entries) {
     bucketSums.set(e.tendency, (bucketSums.get(e.tendency) ?? 0) + e.p);
@@ -183,7 +198,8 @@ export function calibrateScorelines(
       const scale = sum > calBucket && sum > 0 ? calBucket / sum : 1;
       return { score: e.score, probability: round1(e.p * scale * 100) };
     })
-    .sort((a, b) => b.probability - a.probability);
+    // Score key breaks rounded-probability ties for a stable, reproducible order.
+    .sort((a, b) => b.probability - a.probability || a.score.localeCompare(b.score));
 }
 
 function round1(n: number): number {

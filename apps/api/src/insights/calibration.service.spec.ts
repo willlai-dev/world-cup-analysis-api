@@ -17,6 +17,8 @@ describe('CalibrationService', () => {
     tendencyPredicted: 'HOME',
     tendencyActual: i % 2 === 0 ? 'HOME' : 'AWAY',
     tendencyHit: i % 2 === 0,
+    exactScoreHit: i % 4 === 0,
+    top3ScoreHit: i % 2 === 0,
     likelyScorelines: [
       { score: '2-1', probability: 30 },
       { score: '1-1', probability: 25 },
@@ -42,6 +44,13 @@ describe('CalibrationService', () => {
     expect(first.teamBias).toBeInstanceOf(Map);
     // 12 rows × 2 scorelines = 24 binary samples ≥ SCORELINE_MIN_SAMPLE.
     expect(first.scoreline).toMatchObject({ sampleSize: 24, applied: true });
+    // All 12 rows have usable leans → blend weight is fitted.
+    expect(first.scorelineBlend).toMatchObject({ sampleSize: 12, applied: true });
+    expect(first.scoreTrack).toEqual({
+      sampleSize: 12,
+      exactScoreHitRate: 3 / 12,
+      top3ScoreHitRate: 6 / 12,
+    });
     expect(second).toBe(first);
   });
 
@@ -53,5 +62,7 @@ describe('CalibrationService', () => {
     expect(bundle.tendency).toBeNull();
     expect(bundle.teamBias.size).toBe(0);
     expect(bundle.scoreline).toBeNull();
+    expect(bundle.scorelineBlend).toBeNull();
+    expect(bundle.scoreTrack).toBeNull();
   });
 });

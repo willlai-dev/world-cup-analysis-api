@@ -15,6 +15,8 @@ describe('MatchesService.generateAnalyses', () => {
         tendency: null,
         teamBias: new Map<string, number>(),
         scoreline: null,
+        scorelineBlend: null,
+        scoreTrack: null,
       }),
     };
     const service = new MatchesService(
@@ -69,6 +71,8 @@ describe('MatchesService.generateAnalyses', () => {
       },
       teamBias: new Map<string, number>(),
       scoreline: null,
+      scorelineBlend: null,
+      scoreTrack: { sampleSize: 12, exactScoreHitRate: 0.08, top3ScoreHitRate: 0.33 },
     });
     prisma.matchPredictionOutcome.findMany.mockResolvedValue([
       {
@@ -87,6 +91,8 @@ describe('MatchesService.generateAnalyses', () => {
       sampleSize: 12,
       tendencyHitRate: 0.5,
       avgConfidence: 0.58,
+      exactScoreHitRate: 0.08,
+      top3ScoreHitRate: 0.33,
     });
     // Home (predicted win, actually lost) under-performed; away over-performed.
     expect(input.context.predictionTrack.home).toMatchObject({ matches: 1, underPerformed: 1, overPerformed: 0 });
@@ -119,6 +125,8 @@ function buildSettlement() {
       tendency: null,
       teamBias: new Map<string, number>(),
       scoreline: null,
+      scorelineBlend: null,
+      scoreTrack: null,
     }),
   };
   const service = new MatchesService(
@@ -175,6 +183,11 @@ describe('MatchesService.scorePredictions', () => {
           tendencyHit: true,
           exactScoreHit: true,
           top3ScoreHit: true,
+          // Program blend (default weight): the AI's "2-1" leads and matches
+          // the actual score, so the program list also settles as a hit.
+          programScorelines: expect.any(Array),
+          programExactScoreHit: true,
+          programTop3ScoreHit: true,
         }),
       }),
     );
@@ -270,10 +283,20 @@ describe('MatchesService.getPrediction (calibrated)', () => {
     expect(
       c.homeWinProbability + c.drawProbability + c.awayWinProbability,
     ).toBeCloseTo(100, 0);
-    // Scorelines re-aligned with the calibrated 1X2: home-win score shrinks too.
-    expect(c.scorelines).toHaveLength(2);
-    expect(c.scorelines![0].score).toBe('2-1');
-    expect(c.scorelines![0].probability).toBeLessThan(30);
+    // Program blend: AI top-3 ∪ Poisson grid, re-ranked — always 3 entries,
+    // descending, "h-a" keys; the AI's home-win pick shrinks below its claim.
+    expect(c.scorelines).toHaveLength(3);
+    for (const s of c.scorelines!) {
+      expect(s.score).toMatch(/^\d+-\d+$/);
+    }
+    for (let i = 1; i < c.scorelines!.length; i += 1) {
+      expect(c.scorelines![i].probability).toBeLessThanOrEqual(
+        c.scorelines![i - 1].probability,
+      );
+    }
+    const homePick = c.scorelines!.find((s) => s.score === '2-1');
+    expect(homePick).toBeDefined();
+    expect(homePick!.probability).toBeLessThan(30);
   });
 
   it('returns calibrated=null while the sample is too small', async () => {

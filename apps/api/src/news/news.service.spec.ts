@@ -5,11 +5,13 @@ import { NewsService } from './news.service';
 
 function build() {
   const prisma = {
-    newsArticle: { findMany: jest.fn(), update: jest.fn() },
+    newsArticle: { findMany: jest.fn(), update: jest.fn(), delete: jest.fn() },
     newsTag: { upsert: jest.fn() },
     newsArticleTag: { createMany: jest.fn() },
+    aiReport: { deleteMany: jest.fn() },
     team: { findMany: jest.fn().mockResolvedValue([]) },
     player: { findMany: jest.fn().mockResolvedValue([]) },
+    $transaction: jest.fn(async (ops: unknown[]) => Promise.all(ops as Promise<unknown>[])),
   };
   const router = { runReport: jest.fn(), runReportIfChanged: jest.fn() };
   const config = {
@@ -57,6 +59,35 @@ describe('NewsService.generateSummaries', () => {
     );
     expect(prisma.newsArticleTag.createMany).toHaveBeenCalled();
     expect(result).toMatchObject({ scanned: 1, generated: 1, failed: 0 });
+  });
+
+  it('deletes the article (and its NEWS reports) when explicitly not World Cup related', async () => {
+    const { service, prisma, router } = build();
+    prisma.newsArticle.findMany.mockResolvedValue([
+      { id: 'n9', titleEn: 'Golf roundup', summaryEn: 's', contentSnippet: null, sourceName: 'X', publishedAt: null },
+    ]);
+    router.runReport.mockResolvedValue({
+      ok: true,
+      data: {
+        isWorldCupRelated: false,
+        summaryZh: '',
+        category: 'OTHER',
+        tags: [],
+        relatedTeamNames: [],
+        relatedPlayerNames: [],
+        confidenceScore: 90,
+        dataLimitations: [],
+      },
+    });
+
+    const result = await service.generateSummaries();
+
+    expect(prisma.aiReport.deleteMany).toHaveBeenCalledWith({
+      where: { entityType: 'NEWS', entityId: 'n9' },
+    });
+    expect(prisma.newsArticle.delete).toHaveBeenCalledWith({ where: { id: 'n9' } });
+    expect(prisma.newsArticle.update).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ scanned: 1, generated: 0, removed: 1, failed: 0 });
   });
 
   it('marks the article FAILED when generation fails', async () => {

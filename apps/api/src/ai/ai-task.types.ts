@@ -46,7 +46,14 @@ export type RoutingRule = {
   fallback: ModelSlot | null;
 };
 
-/** Primary → fallback model selection per task (spec §"Model Routing"). */
+/**
+ * Primary → fallback model selection per task (spec §"Model Routing").
+ * zh-output tasks whose primary is NVIDIA fall back to QWEN_PLUS (not another
+ * NVIDIA model): Nemotron sometimes ignores the 繁體中文 instruction, and the
+ * router's language check needs a fallback that reliably writes Chinese —
+ * otherwise an English answer would just be retried on an equally
+ * English-leaning model.
+ */
 export const ROUTING_TABLE: Record<AiTaskType, RoutingRule> = {
   MATCH_ANALYSIS: { primary: 'NVIDIA_ULTRA', fallback: 'QWEN_PLUS' },
   RETRO_MATCH_ANALYSIS: { primary: 'NVIDIA_ULTRA', fallback: 'QWEN_PLUS' },
@@ -54,22 +61,31 @@ export const ROUTING_TABLE: Record<AiTaskType, RoutingRule> = {
   CHAMPION_PREDICTION_B: { primary: 'QWEN_PLUS', fallback: null },
   CHAMPION_PREDICTION_FINAL: { primary: 'QWEN_PLUS', fallback: 'NVIDIA_ULTRA' },
   GENERAL_CHAT: { primary: 'NVIDIA_SUPER', fallback: 'QWEN_PLUS' },
-  PLAYER_HEXAGON_ANALYSIS: { primary: 'NVIDIA_SUPER', fallback: 'NVIDIA_ULTRA' },
-  NEWS_CLASSIFICATION: { primary: 'NVIDIA_SUPER', fallback: 'NVIDIA_ULTRA' },
+  PLAYER_HEXAGON_ANALYSIS: { primary: 'NVIDIA_SUPER', fallback: 'QWEN_PLUS' },
+  NEWS_CLASSIFICATION: { primary: 'NVIDIA_SUPER', fallback: 'QWEN_PLUS' },
   NEWS_TRANSLATION: { primary: 'QWEN_FLASH', fallback: 'QWEN_FLASH_FALLBACK' },
   NEWS_IMPACT: { primary: 'NVIDIA_SUPER', fallback: 'QWEN_PLUS' },
   PLAYER_NAME_TRANSLATION: { primary: 'QWEN_FLASH', fallback: 'QWEN_FLASH_FALLBACK' },
-  PLAYER_STATUS_SUMMARY: { primary: 'NVIDIA_SUPER', fallback: 'NVIDIA_ULTRA' },
-  PLAYER_RATING: { primary: 'NVIDIA_SUPER', fallback: 'NVIDIA_ULTRA' },
+  PLAYER_STATUS_SUMMARY: { primary: 'NVIDIA_SUPER', fallback: 'QWEN_PLUS' },
+  PLAYER_RATING: { primary: 'NVIDIA_SUPER', fallback: 'QWEN_PLUS' },
   TEAM_SQUAD_ANALYSIS: { primary: 'NVIDIA_ULTRA', fallback: 'QWEN_PLUS' },
   FINAL_REPORT_POLISH: { primary: 'QWEN_PLUS', fallback: 'NVIDIA_ULTRA' },
   JSON_FORMATTING: { primary: 'QWEN_FLASH', fallback: 'QWEN_FLASH_FALLBACK' },
   DEEP_MATCH_CHAT: { primary: 'NVIDIA_ULTRA', fallback: 'QWEN_PLUS' },
   DEEP_TEAM_CHAT: { primary: 'NVIDIA_ULTRA', fallback: 'QWEN_PLUS' },
-  DEEP_PLAYER_CHAT: { primary: 'NVIDIA_SUPER', fallback: 'NVIDIA_ULTRA' },
+  DEEP_PLAYER_CHAT: { primary: 'NVIDIA_SUPER', fallback: 'QWEN_PLUS' },
   DEEP_CHAMPION_CHAT: { primary: 'QWEN_PLUS', fallback: 'NVIDIA_ULTRA' },
-  DEEP_NEWS_CHAT: { primary: 'NVIDIA_SUPER', fallback: 'NVIDIA_ULTRA' },
+  DEEP_NEWS_CHAT: { primary: 'NVIDIA_SUPER', fallback: 'QWEN_PLUS' },
 };
+
+/**
+ * Tasks whose output is legitimately non-Chinese (pure JSON restructuring).
+ * Every other task must produce 繁體中文 text; the router rejects outputs that
+ * contain no CJK and falls back to the next model slot.
+ */
+export const ZH_OUTPUT_EXEMPT_TASKS: ReadonlySet<AiTaskType> = new Set<AiTaskType>([
+  'JSON_FORMATTING',
+]);
 
 /** Maps a task to the {@link AiEntityType} stored on AiReport / AiUsageLog. */
 export const TASK_ENTITY_TYPE: Record<AiTaskType, AiEntityType> = {

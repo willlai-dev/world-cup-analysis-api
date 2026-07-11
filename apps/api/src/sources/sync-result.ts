@@ -8,6 +8,10 @@ export type SyncResult = {
   created?: number;
   updated?: number;
   failed?: number;
+  /** Stale rows deleted because the source no longer lists them (fixtures sync). */
+  pruned?: number;
+  /** Existing rows enriched with newly fetched data (news body backfill). */
+  backfilled?: number;
   /** Teams newly marked eliminated this run (match sync recompute). */
   eliminated?: number;
   /** Teams whose stale eliminated flag was cleared this run (match sync recompute). */

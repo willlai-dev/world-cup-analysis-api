@@ -6,6 +6,7 @@ import { buildMockChatAnswer } from '../common/utils/ai-mock.util';
 import { AppConfigService } from '../config/app-config.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AiPromptService } from './ai-prompt.service';
+import { looksChinese } from './language.util';
 import { sourceSnapshotHash } from './source-hash.util';
 import { AiSchemaValidator, type ValidationResult } from './ai-schema-validator.service';
 import {
@@ -18,6 +19,7 @@ import {
   type ProviderName,
   ROUTING_TABLE,
   TASK_ENTITY_TYPE,
+  ZH_OUTPUT_EXEMPT_TASKS,
 } from './ai-task.types';
 import { AiUsageService } from './ai-usage.service';
 import { NvidiaAdapter } from './providers/nvidia.adapter';
@@ -156,6 +158,8 @@ export class AiRouterService {
     entityId?: string | null;
     source: string;
     scope?: string | null;
+    /** Overrides the default translate instruction (e.g. full-text + key points). */
+    instruction?: string;
   }): Promise<TranslationResult> {
     if (this.config.aiMockMode) {
       await this.usage.log({
@@ -176,12 +180,13 @@ export class AiRouterService {
       };
     }
 
+    const instruction =
+      input.instruction ??
+      '請將以下新聞內容翻譯成自然流暢的繁體中文，只輸出翻譯結果，不要加入任何額外說明或標題：';
     const messages = this.prompt.build({
       taskType: 'NEWS_TRANSLATION',
       scope: input.scope,
-      userPrompt:
-        '請將以下新聞內容翻譯成自然流暢的繁體中文，只輸出翻譯結果，不要加入任何額外說明或標題：\n\n' +
-        input.source,
+      userPrompt: `${instruction}\n\n${input.source}`,
     });
     const result = await this.callWithRouting({
       taskType: 'NEWS_TRANSLATION',
@@ -189,6 +194,7 @@ export class AiRouterService {
       entityId: input.entityId,
       messages,
       responseFormat: 'text',
+      enforceZh: true,
     });
 
     if (result.ok) {
@@ -231,6 +237,7 @@ export class AiRouterService {
       messages,
       responseFormat: schema ? 'json' : 'text',
       validate: schema ? (c) => this.validator.validate(schema, c) : undefined,
+      enforceZh: true,
     });
 
     if (result.ok) {
@@ -378,6 +385,8 @@ export class AiRouterService {
     messages: AiChatMessage[];
     responseFormat?: 'text' | 'json';
     validate?: (content: string) => ValidationResult<T>;
+    /** Reject non-Chinese output and fall back (persisted reports/translations). */
+    enforceZh?: boolean;
   }): Promise<
     | { ok: true; response: AiChatResponse; data: T }
     | { ok: false; lastError: string; lastContent?: string }
@@ -396,6 +405,33 @@ export class AiRouterService {
           messages: input.messages,
           responseFormat: input.responseFormat,
         });
+
+        // Language gate: persisted zh outputs must actually be Chinese, or an
+        // English analysis would pass schema validation and get stored. Chat
+        // is exempt — a user may legitimately converse in another language.
+        if (
+          input.enforceZh &&
+          !ZH_OUTPUT_EXEMPT_TASKS.has(input.taskType) &&
+          !looksChinese(response.content)
+        ) {
+          lastError = 'Output language check failed: expected 繁體中文, got non-Chinese text';
+          lastContent = response.content;
+          this.logger.warn(`${input.taskType} ${provider}/${model} output is not Chinese; trying fallback`);
+          await this.usage.log({
+            userId: input.userId,
+            provider,
+            model,
+            taskType: input.taskType,
+            entityType,
+            entityId: input.entityId,
+            requestStatus: FAILED,
+            inputTokenEstimate: response.inputTokenEstimate,
+            outputTokenEstimate: response.outputTokenEstimate,
+            latencyMs: response.latencyMs,
+            errorMessage: lastError,
+          });
+          continue;
+        }
 
         if (input.validate) {
           const validation = input.validate(response.content);

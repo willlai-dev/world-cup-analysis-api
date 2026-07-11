@@ -31,6 +31,7 @@ import { PrismaService } from "../prisma/prisma.service";
 import type { ListNewsQueryDto } from "./dto/list-news-query.dto";
 
 const NEWS_MOCK: NewsClassificationOutput = {
+  isWorldCupRelated: true,
   summaryZh: "【AI_MOCK_MODE】新聞摘要示範（尚未串接真實模型）。",
   category: "OTHER",
   tags: [],
@@ -48,8 +49,37 @@ const NEWS_IMPACT_MOCK: NewsImpactOutput = {
   dataLimitations: ["示範模式"],
 };
 
+/**
+ * Splits the translate output into { titleZh, contentZh }: the instruction puts
+ * the translated title on line 1 and the body after it. When the model skips
+ * the title line (starts straight into a section header / bullets) the whole
+ * output is treated as content and titleZh stays null.
+ */
+export function splitTitleFromTranslation(raw: string): {
+  titleZh: string | null;
+  contentZh: string;
+} {
+  const trimmed = raw.trim();
+  const newline = trimmed.indexOf("\n");
+  if (newline === -1) return { titleZh: null, contentZh: trimmed };
+  const first = trimmed.slice(0, newline).trim();
+  const rest = trimmed.slice(newline + 1).trim();
+  const looksLikeTitle =
+    first.length > 0 &&
+    first.length <= 120 &&
+    !first.startsWith("#") &&
+    !first.startsWith("•") &&
+    !first.startsWith("-") &&
+    rest.length > 0;
+  return looksLikeTitle
+    ? { titleZh: first, contentZh: rest }
+    : { titleZh: null, contentZh: trimmed };
+}
+
 export type NewsDetailDto = NewsSummary & {
   contentSnippet: string | null;
+  /** Full plain-text original body when the source provides one (Guardian). */
+  contentEn: string | null;
   translatedContentZh: string | null;
   language: string | null;
   fetchedAt: string | null;
@@ -119,13 +149,20 @@ export class NewsService {
     return {
       ...toNewsSummary(news),
       contentSnippet: news.contentSnippet,
+      contentEn: news.contentEn,
       translatedContentZh: news.translatedContentZh,
       language: news.language,
       fetchedAt: news.fetchedAt ? news.fetchedAt.toISOString() : null,
     };
   }
 
-  /** Translates a news article to zh-TW via the AI router (Qwen). */
+  /**
+   * Translates a news article to zh-TW via the AI router (Qwen). With a stored
+   * full body the output is 重點整理 + 全文翻譯; otherwise only the snippet is
+   * available and it is translated in full. The title is translated in the
+   * same request (first line of the model output) so the placeholder
+   * 「【譯】…」 title heals on re-translation.
+   */
   async translate(newsId: string, userId: string): Promise<NewsDetailDto> {
     const news = await this.prisma.newsArticle.findUnique({
       where: { id: newsId },
@@ -136,23 +173,42 @@ export class NewsService {
         message: "News article not found",
       });
     }
-    const source = news.contentSnippet ?? news.summaryEn ?? news.titleEn;
+    const fullBody = news.contentEn?.trim();
+    const snippet = news.contentSnippet ?? news.summaryEn ?? news.titleEn;
+    const source = `【標題】${news.titleEn}\n\n【內文】\n${fullBody || snippet}`;
+    const instruction = fullBody
+      ? "請將以下英文新聞翻譯成自然流暢的繁體中文，依序輸出（不要加入其他說明）：\n" +
+        "第 1 行：標題的繁體中文翻譯（單獨一行，不加前綴）。\n" +
+        "接著輸出「## 重點整理」段落：3–5 條列點，每點以「• 」開頭，濃縮全文關鍵資訊。\n" +
+        "最後輸出「## 全文翻譯」段落：完整翻譯整篇內文，不可省略或濃縮任何段落。"
+      : "以下英文新聞目前僅有摘要片段。請依序輸出（不要加入其他說明）：\n" +
+        "第 1 行：標題的繁體中文翻譯（單獨一行，不加前綴）。\n" +
+        "接著輸出「## 摘要翻譯」段落：將摘要片段完整翻譯成自然流暢的繁體中文，" +
+        "並在結尾以「（本文僅含來源提供的摘要，未含全文）」標註。";
     const result = await this.router.runTranslation({
       userId,
       entityId: newsId,
       source,
       scope: `新聞：${news.titleEn}`,
+      instruction,
     });
+    const parsed = result.ok ? splitTitleFromTranslation(result.content) : null;
     const updated = await this.prisma.newsArticle.update({
       where: { id: newsId },
       data: {
         translationStatus: result.ok
           ? TranslationStatus.DONE
           : TranslationStatus.FAILED,
-        titleZh: news.titleZh ?? `【譯】${news.titleEn}`,
+        // A parsed title replaces the legacy 「【譯】…」 placeholder; keep any
+        // real existing title when this attempt yields none.
+        titleZh:
+          parsed?.titleZh ??
+          (news.titleZh && !news.titleZh.startsWith("【譯】")
+            ? news.titleZh
+            : `【譯】${news.titleEn}`),
         // Keep any previous translation if this attempt failed.
-        translatedContentZh: result.ok
-          ? result.content
+        translatedContentZh: parsed
+          ? parsed.contentZh
           : news.translatedContentZh,
       },
       include: withTags,
@@ -160,6 +216,7 @@ export class NewsService {
     return {
       ...toNewsSummary(updated),
       contentSnippet: updated.contentSnippet,
+      contentEn: updated.contentEn,
       translatedContentZh: updated.translatedContentZh,
       language: updated.language,
       fetchedAt: updated.fetchedAt ? updated.fetchedAt.toISOString() : null,
@@ -197,12 +254,16 @@ export class NewsService {
     });
     let generated = 0;
     let failed = 0;
+    let removed = 0;
 
     for (const article of articles) {
       const context = {
         title: article.titleEn,
         summary: article.summaryEn,
         snippet: article.contentSnippet,
+        // Truncated full body (when stored) so summaryZh digests the article,
+        // not just the one-line trail text.
+        content: article.contentEn?.slice(0, 4000) ?? null,
         source: article.sourceName,
         publishedAt: article.publishedAt?.toISOString() ?? null,
       };
@@ -211,8 +272,11 @@ export class NewsService {
         entityId: article.id,
         reportType: "NEWS_CLASSIFICATION",
         instruction:
-          "請依新聞標題與摘要，輸出繁體中文摘要、分類與標籤。只輸出 JSON，欄位：" +
-          '{ "summaryZh": string, "category": MATCH|PLAYER|INJURY|TRANSFER|TEAM|TACTIC|CONTROVERSY|TOURNAMENT|OTHER, ' +
+          "請依新聞標題、摘要與內文（context.content 有值時以內文為主），輸出繁體中文摘要、分類與標籤。" +
+          "summaryZh 應為 2–4 句的重點摘要。" +
+          "isWorldCupRelated 判斷標準：此新聞是否與 FIFA 世界盃（含參賽國家隊與球員在本屆賽事的表現、傷病、晉級、賽程、球迷與周邊）直接相關；" +
+          "若只是俱樂部轉會傳聞、其他運動（板球/高爾夫/美式運動等）、財經科技娛樂等僅順帶提到 World Cup 字樣的內容，必須為 false。只輸出 JSON，欄位：" +
+          '{ "isWorldCupRelated": boolean, "summaryZh": string, "category": MATCH|PLAYER|INJURY|TRANSFER|TEAM|TACTIC|CONTROVERSY|TOURNAMENT|OTHER, ' +
           '"tags": [{ "name": string, "type": TEAM|PLAYER|MATCH|TOPIC|INJURY|TACTIC|CONTROVERSY|TRANSFER|OTHER }], ' +
           '"relatedTeamNames": string[], "relatedPlayerNames": string[], "confidenceScore": number, "dataLimitations": string[] }。',
         context,
@@ -222,8 +286,17 @@ export class NewsService {
       });
 
       if (report.ok && report.data) {
-        await this.applyClassification(article.id, report.data);
-        generated += 1;
+        // Only an explicit false deletes — a missing field must never nuke news.
+        if (report.data.isWorldCupRelated === false) {
+          // Relevance gate: the source queries match any article mentioning
+          // "World Cup", which drags in other sports / club gossip / off-topic
+          // feeds. Delete instead of keeping noise the site would render.
+          await this.deleteArticleWithReports(article.id);
+          removed += 1;
+        } else {
+          await this.applyClassification(article.id, report.data);
+          generated += 1;
+        }
       } else {
         await this.prisma.newsArticle.update({
           where: { id: article.id },
@@ -240,7 +313,18 @@ export class NewsService {
       generated,
       skipped: 0,
       failed,
+      removed,
     };
+  }
+
+  /** Deletes an article plus its polymorphic AiReports (tags cascade via FK). */
+  private async deleteArticleWithReports(articleId: string): Promise<void> {
+    await this.prisma.$transaction([
+      this.prisma.aiReport.deleteMany({
+        where: { entityType: "NEWS", entityId: articleId },
+      }),
+      this.prisma.newsArticle.delete({ where: { id: articleId } }),
+    ]);
   }
 
   /**

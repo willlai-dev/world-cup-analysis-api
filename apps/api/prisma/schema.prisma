@@ -384,6 +384,9 @@ model NewsArticle {
   summaryEn           String?
   summaryZh           String?
   contentSnippet      String?
+  /// Full plain-text article body when the source provides one (Guardian only);
+  /// preferred translation source so譯文可涵蓋全文而非僅摘要片段。
+  contentEn           String?
   publishedAt         DateTime?
   fetchedAt           DateTime?
   category            NewsCategory?

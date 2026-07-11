@@ -5,6 +5,8 @@ export type NewsSourceDto = {
   titleEn: string;
   summaryEn: string | null;
   contentSnippet: string | null;
+  /** Full plain-text article body when the source provides one (Guardian only). */
+  contentEn: string | null;
   publishedAt: Date | null;
   language: string;
 };
@@ -14,9 +16,10 @@ export type GuardianResult = {
   webUrl: string;
   webPublicationDate?: string | null;
   sectionName?: string | null;
-  fields?: { trailText?: string | null } | null;
+  fields?: { trailText?: string | null; bodyText?: string | null } | null;
 };
 export type GuardianResponse = { response?: { results?: GuardianResult[] } };
+export type GuardianItemResponse = { response?: { content?: GuardianResult | null } };
 
 export type NewsApiArticle = {
   source?: { name?: string | null } | null;

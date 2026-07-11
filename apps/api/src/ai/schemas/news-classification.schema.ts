@@ -2,6 +2,13 @@ import { z } from 'zod';
 
 /** Structured output for `NEWS_CLASSIFICATION` (spec §"NewsClassificationOutput"). */
 export const NewsClassificationOutputSchema = z.object({
+  /**
+   * Relevance gate: false means the article is not about the FIFA World Cup
+   * (other sports, club-only news, off-topic feeds that merely mention the
+   * phrase) and the pipeline deletes it. Defaults true so a model that omits
+   * the field can never mass-delete articles.
+   */
+  isWorldCupRelated: z.boolean().default(true),
   summaryZh: z.string().default(''),
   category: z
     .enum([

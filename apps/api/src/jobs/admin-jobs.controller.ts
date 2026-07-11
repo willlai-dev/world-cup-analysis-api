@@ -12,6 +12,7 @@ import {
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JobType } from '@prisma/client';
 import { AdminOnlyGuard } from '../common/guards/admin-only.guard';
+import { type MaintenanceResult, DataMaintenanceService } from './data-maintenance.service';
 import { ListJobRunsQueryDto } from './dto/list-job-runs.dto';
 import { RunJobsDto } from './dto/run-jobs.dto';
 import { RunTeamDto } from './dto/run-team.dto';
@@ -47,7 +48,32 @@ const PIPELINE_RUNNING = {
 @Controller('admin/jobs')
 @UseGuards(AdminOnlyGuard)
 export class AdminJobsController {
-  constructor(private readonly jobs: JobsService) {}
+  constructor(
+    private readonly jobs: JobsService,
+    private readonly maintenance: DataMaintenanceService,
+  ) {}
+
+  @Post('maintenance/reset-non-chinese')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      '資料修復：將英文 AI 報告標記 FAILED、清除英文新聞摘要/翻譯與僅含摘要片段的舊譯文，' +
+      '之後執行 GENERATE 管線即可以繁體中文重新生成。',
+  })
+  resetNonChinese(): Promise<MaintenanceResult> {
+    return this.maintenance.resetNonChineseContent();
+  }
+
+  @Post('maintenance/requeue-news-classification')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      '資料修復：刪除同標題重複新聞並將全部文章重排入分類佇列；' +
+      '之後跑 GENERATE_NEWS_SUMMARY 會以相關性判斷刪除非世界盃新聞。',
+  })
+  requeueNewsClassification(): Promise<{ duplicatesRemoved: number; requeued: number }> {
+    return this.maintenance.requeueNewsClassification();
+  }
 
   @Post('run')
   @HttpCode(202)

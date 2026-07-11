@@ -191,6 +191,7 @@ export class MatchSyncService {
     let created = 0;
     let updated = 0;
     let failed = 0;
+    let pruned = 0;
 
     for (const m of matches) {
       const homeTeamId = resolve(m.homeTeam);
@@ -214,6 +215,17 @@ export class MatchSyncService {
       else created += 1;
     }
 
+    // Fixtures sync (no status filter) returns the competition's full match
+    // list, so anything in our DB that the source no longer lists belongs to
+    // another competition (e.g. rows synced while FOOTBALL_DATA_COMPETITION
+    // pointed elsewhere) and must go, or it pollutes schedules, eliminations
+    // and analyses. Guarded on a non-empty fetch so an empty/failed source
+    // response can never wipe the table. Results sync (FINISHED filter) is a
+    // partial list and must never prune.
+    if (status === undefined && matches.length > 0) {
+      pruned = await this.pruneMatchesNotIn(matches.map((m) => String(m.id)));
+    }
+
     const { eliminated, reinstated } = await this.recomputeEliminations();
 
     return {
@@ -222,9 +234,33 @@ export class MatchSyncService {
       created,
       updated,
       failed,
+      pruned,
       eliminated,
       reinstated,
     };
+  }
+
+  /**
+   * Deletes matches whose externalId is not in the competition's current match
+   * list. MatchEvent / MatchPredictionOutcome rows cascade via FK; AiReports
+   * are polymorphic (entityType/entityId, no FK) so they are deleted
+   * explicitly. Rows with a null externalId are left untouched (they did not
+   * come from this source).
+   */
+  private async pruneMatchesNotIn(externalIds: string[]): Promise<number> {
+    const stale = await this.prisma.match.findMany({
+      where: { externalId: { notIn: externalIds } },
+      select: { id: true },
+    });
+    if (stale.length === 0) return 0;
+    const staleIds = stale.map((m) => m.id);
+    const [, deleted] = await this.prisma.$transaction([
+      this.prisma.aiReport.deleteMany({
+        where: { entityType: "MATCH", entityId: { in: staleIds } },
+      }),
+      this.prisma.match.deleteMany({ where: { id: { in: staleIds } } }),
+    ]);
+    return deleted.count;
   }
 
   /**

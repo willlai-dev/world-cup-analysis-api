@@ -26,9 +26,16 @@ const okResponse = (provider: ProviderName, model: string, content: string): AiC
 });
 
 const VALID_FINAL = {
-  summary: 's',
+  summary: '巴西整體實力最強，奪冠機率領先。',
   entries: [
-    { teamName: 'Brazil', rank: 1, probabilityText: '30%', strengths: ['a'], risks: ['b'], aiComment: 'c' },
+    {
+      teamName: 'Brazil',
+      rank: 1,
+      probabilityText: '30%',
+      strengths: ['進攻火力強'],
+      risks: ['後防不穩'],
+      aiComment: '傾向看好',
+    },
   ],
   dataLimitations: [],
 };
@@ -185,6 +192,47 @@ describe('AiRouterService', () => {
       expect(qwenChat).toHaveBeenCalledTimes(1);
       expect(res.ok).toBe(true);
       expect(res.provider).toBe('QWEN');
+    });
+
+    it('rejects schema-valid but English output and falls back (language gate)', async () => {
+      const englishFinal = {
+        summary: 'Brazil are the strongest side and lead the title race.',
+        entries: [
+          {
+            teamName: 'Brazil',
+            rank: 1,
+            probabilityText: '30%',
+            strengths: ['strong attack'],
+            risks: ['shaky defense'],
+            aiComment: 'leaning towards Brazil',
+          },
+        ],
+        dataLimitations: [],
+      };
+      const nvidiaChat: ChatFn = jest
+        .fn()
+        .mockResolvedValue(okResponse('NVIDIA', 'nv-ultra', JSON.stringify(englishFinal)));
+      const qwenChat: ChatFn = jest
+        .fn()
+        .mockResolvedValue(okResponse('QWEN', 'qw-plus', JSON.stringify(VALID_FINAL)));
+      const { router, prisma } = build(false, nvidiaChat, qwenChat);
+
+      const res = await router.runReport({
+        taskType: 'MATCH_ANALYSIS',
+        reportType: 'MATCH_ANALYSIS',
+        instruction: 'go',
+        schema: ChampionAnalysisOutputSchema,
+      });
+
+      expect(nvidiaChat).toHaveBeenCalledTimes(1);
+      expect(qwenChat).toHaveBeenCalledTimes(1);
+      expect(res.ok).toBe(true);
+      expect(res.provider).toBe('QWEN');
+      // failed-attempt usage log carries the language-check error
+      expect(prisma.aiUsageLog.create.mock.calls[0][0].data).toMatchObject({
+        provider: 'NVIDIA',
+        requestStatus: 'FAILED',
+      });
     });
 
     it('persists a FAILED report when all attempts produce invalid output', async () => {

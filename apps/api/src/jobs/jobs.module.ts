@@ -6,6 +6,7 @@ import { PlayersModule } from '../players/players.module';
 import { SourcesModule } from '../sources/sources.module';
 import { TeamsModule } from '../teams/teams.module';
 import { AdminJobsController } from './admin-jobs.controller';
+import { DataMaintenanceService } from './data-maintenance.service';
 import { JobsController } from './jobs.controller';
 import { JobsScheduler } from './jobs.scheduler';
 import { JobsService } from './jobs.service';
@@ -20,6 +21,6 @@ import { JobsService } from './jobs.service';
     TeamsModule,
   ],
   controllers: [JobsController, AdminJobsController],
-  providers: [JobsService, JobsScheduler],
+  providers: [JobsService, JobsScheduler, DataMaintenanceService],
 })
 export class JobsModule {}

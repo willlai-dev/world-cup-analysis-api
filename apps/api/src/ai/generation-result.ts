@@ -9,6 +9,8 @@ export type GenerationResult = {
   skipped: number;
   /** Entities whose generation failed. */
   failed: number;
+  /** Entities deleted by a relevance/cleanup gate (news classification). */
+  removed?: number;
 };
 
 /** Bound a single generation run so a cron job never runs unboundedly. */

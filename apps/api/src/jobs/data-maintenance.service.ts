@@ -14,7 +14,16 @@ export type MaintenanceResult = {
   snippetTranslationsReset: number;
 };
 
+/** Rows per read batch and per write chunk — keeps every query bounded. */
 const BATCH = 500;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
+}
 
 /**
  * One-shot data repairs for rows persisted before the router's language gate /
@@ -23,6 +32,12 @@ const BATCH = 500;
  * lookup miss them, so the next GENERATE run regenerates every affected
  * analysis; readers only surface DONE reports, so English content disappears
  * from the site immediately.
+ *
+ * Every repair is a read-only id-cursor scan followed by chunked writes:
+ * scanning and mutating in the same cursor loop can skip rows (an updated
+ * cursor row no longer matches the where clause, so `skip: 1` jumps past an
+ * unprocessed record), and collect-then-update also keeps memory bounded to
+ * one batch of text plus the accumulated id list.
  */
 @Injectable()
 export class DataMaintenanceService {
@@ -45,74 +60,6 @@ export class DataMaintenanceService {
     return result;
   }
 
-  private async failEnglishReports(): Promise<number> {
-    let failed = 0;
-    let cursor: string | undefined;
-    for (;;) {
-      const rows = await this.prisma.aiReport.findMany({
-        where: { status: AiReportStatus.DONE, content: { not: null } },
-        select: { id: true, content: true },
-        orderBy: { id: 'asc' },
-        take: BATCH,
-        ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
-      });
-      if (rows.length === 0) break;
-      cursor = rows[rows.length - 1].id;
-      const englishIds = rows
-        .filter((r) => r.content && !looksChinese(r.content))
-        .map((r) => r.id);
-      if (englishIds.length > 0) {
-        const res = await this.prisma.aiReport.updateMany({
-          where: { id: { in: englishIds } },
-          data: {
-            status: AiReportStatus.FAILED,
-            errorMessage: 'maintenance: output was not Chinese; queued for regeneration',
-          },
-        });
-        failed += res.count;
-      }
-      if (rows.length < BATCH) break;
-    }
-    return failed;
-  }
-
-  private async resetEnglishNewsSummaries(): Promise<number> {
-    const rows = await this.prisma.newsArticle.findMany({
-      where: { summaryZh: { not: null } },
-      select: { id: true, summaryZh: true },
-    });
-    const ids = rows.filter((r) => r.summaryZh && !looksChinese(r.summaryZh)).map((r) => r.id);
-    if (ids.length === 0) return 0;
-    const res = await this.prisma.newsArticle.updateMany({
-      where: { id: { in: ids } },
-      data: { summaryZh: null, aiSummaryStatus: AiReportStatus.PENDING },
-    });
-    return res.count;
-  }
-
-  private async resetEnglishTranslations(): Promise<number> {
-    const rows = await this.prisma.newsArticle.findMany({
-      where: { translatedContentZh: { not: null } },
-      select: { id: true, translatedContentZh: true },
-    });
-    const ids = rows
-      .filter((r) => r.translatedContentZh && !looksChinese(r.translatedContentZh))
-      .map((r) => r.id);
-    if (ids.length === 0) return 0;
-    const res = await this.prisma.newsArticle.updateMany({
-      where: { id: { in: ids } },
-      data: { translatedContentZh: null, translationStatus: TranslationStatus.NONE },
-    });
-    return res.count;
-  }
-
-  /**
-   * Translations produced before full bodies were stored only cover the trail
-   * snippet. Once the article has a body (backfilled by FETCH_NEWS), clear the
-   * short translation so the premium re-translate button produces 重點整理 +
-   * 全文翻譯. Full-text translations are recognizable by the「全文翻譯」section
-   * header the new instruction emits.
-   */
   /**
    * Queues every article for re-classification and removes duplicate titles.
    * Existing rows predate the `isWorldCupRelated` relevance gate, so flipping
@@ -136,46 +83,173 @@ export class DataMaintenanceService {
     return { duplicatesRemoved, requeued: res.count };
   }
 
-  /** Deletes newer copies of articles sharing the same (case-folded) title. */
-  private async removeDuplicateTitles(): Promise<number> {
-    const rows = await this.prisma.newsArticle.findMany({
-      select: { id: true, titleEn: true },
-      orderBy: { createdAt: 'asc' },
-    });
-    const seen = new Set<string>();
-    const dupes: string[] = [];
-    for (const r of rows) {
-      const key = r.titleEn.trim().toLowerCase();
-      if (seen.has(key)) dupes.push(r.id);
-      else seen.add(key);
+  private async failEnglishReports(): Promise<number> {
+    const englishIds = await this.collectIds(
+      (cursor) =>
+        this.prisma.aiReport.findMany({
+          where: { status: AiReportStatus.DONE, content: { not: null } },
+          select: { id: true, content: true },
+          orderBy: { id: 'asc' },
+          take: BATCH,
+          ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+        }),
+      (row) => !!row.content && !looksChinese(row.content),
+    );
+    let failed = 0;
+    for (const ids of chunk(englishIds, BATCH)) {
+      const res = await this.prisma.aiReport.updateMany({
+        where: { id: { in: ids } },
+        data: {
+          status: AiReportStatus.FAILED,
+          errorMessage: 'maintenance: output was not Chinese; queued for regeneration',
+        },
+      });
+      failed += res.count;
     }
-    if (dupes.length === 0) return 0;
-    const [, deleted] = await this.prisma.$transaction([
-      this.prisma.aiReport.deleteMany({
-        where: { entityType: 'NEWS', entityId: { in: dupes } },
-      }),
-      this.prisma.newsArticle.deleteMany({ where: { id: { in: dupes } } }),
-    ]);
-    return deleted.count;
+    return failed;
   }
 
+  private async resetEnglishNewsSummaries(): Promise<number> {
+    const ids = await this.collectIds(
+      (cursor) =>
+        this.prisma.newsArticle.findMany({
+          where: { summaryZh: { not: null } },
+          select: { id: true, summaryZh: true },
+          orderBy: { id: 'asc' },
+          take: BATCH,
+          ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+        }),
+      (row) => !!row.summaryZh && !looksChinese(row.summaryZh),
+    );
+    let reset = 0;
+    for (const batch of chunk(ids, BATCH)) {
+      const res = await this.prisma.newsArticle.updateMany({
+        where: { id: { in: batch } },
+        data: { summaryZh: null, aiSummaryStatus: AiReportStatus.PENDING },
+      });
+      reset += res.count;
+    }
+    return reset;
+  }
+
+  private async resetEnglishTranslations(): Promise<number> {
+    const ids = await this.collectIds(
+      (cursor) =>
+        this.prisma.newsArticle.findMany({
+          where: { translatedContentZh: { not: null } },
+          select: { id: true, translatedContentZh: true },
+          orderBy: { id: 'asc' },
+          take: BATCH,
+          ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+        }),
+      (row) => !!row.translatedContentZh && !looksChinese(row.translatedContentZh),
+    );
+    let reset = 0;
+    for (const batch of chunk(ids, BATCH)) {
+      const res = await this.prisma.newsArticle.updateMany({
+        where: { id: { in: batch } },
+        data: { translatedContentZh: null, translationStatus: TranslationStatus.NONE },
+      });
+      reset += res.count;
+    }
+    return reset;
+  }
+
+  /**
+   * Translations produced before full bodies were stored only cover the trail
+   * snippet. Once the article has a body (backfilled by FETCH_NEWS), clear the
+   * short translation so the premium re-translate button produces 重點整理 +
+   * 全文翻譯. Full-text translations are recognizable by the「全文翻譯」section
+   * header the new instruction emits.
+   */
   private async resetSnippetTranslations(): Promise<number> {
-    const rows = await this.prisma.newsArticle.findMany({
-      where: {
-        translationStatus: TranslationStatus.DONE,
-        translatedContentZh: { not: null },
-        contentEn: { not: null },
-      },
-      select: { id: true, translatedContentZh: true },
-    });
-    const ids = rows
-      .filter((r) => !(r.translatedContentZh ?? '').includes('全文翻譯'))
-      .map((r) => r.id);
-    if (ids.length === 0) return 0;
-    const res = await this.prisma.newsArticle.updateMany({
-      where: { id: { in: ids } },
-      data: { translatedContentZh: null, translationStatus: TranslationStatus.NONE },
-    });
-    return res.count;
+    const ids = await this.collectIds(
+      (cursor) =>
+        this.prisma.newsArticle.findMany({
+          where: {
+            translationStatus: TranslationStatus.DONE,
+            translatedContentZh: { not: null },
+            contentEn: { not: null },
+          },
+          select: { id: true, translatedContentZh: true },
+          orderBy: { id: 'asc' },
+          take: BATCH,
+          ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+        }),
+      (row) => !(row.translatedContentZh ?? '').includes('全文翻譯'),
+    );
+    let reset = 0;
+    for (const batch of chunk(ids, BATCH)) {
+      const res = await this.prisma.newsArticle.updateMany({
+        where: { id: { in: batch } },
+        data: { translatedContentZh: null, translationStatus: TranslationStatus.NONE },
+      });
+      reset += res.count;
+    }
+    return reset;
+  }
+
+  /** Deletes newer copies of articles sharing the same (case-folded) title. */
+  private async removeDuplicateTitles(): Promise<number> {
+    // Keep the earliest createdAt per title; everything else is a duplicate.
+    const keeper = new Map<string, { id: string; createdAt: Date }>();
+    const dupes: string[] = [];
+    let cursor: string | undefined;
+    for (;;) {
+      const rows = await this.prisma.newsArticle.findMany({
+        select: { id: true, titleEn: true, createdAt: true },
+        orderBy: { id: 'asc' },
+        take: BATCH,
+        ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+      });
+      if (rows.length === 0) break;
+      cursor = rows[rows.length - 1].id;
+      for (const r of rows) {
+        const key = r.titleEn.trim().toLowerCase();
+        const kept = keeper.get(key);
+        if (!kept) {
+          keeper.set(key, { id: r.id, createdAt: r.createdAt });
+        } else if (r.createdAt < kept.createdAt) {
+          dupes.push(kept.id);
+          keeper.set(key, { id: r.id, createdAt: r.createdAt });
+        } else {
+          dupes.push(r.id);
+        }
+      }
+      if (rows.length < BATCH) break;
+    }
+    let deleted = 0;
+    for (const batch of chunk(dupes, BATCH)) {
+      const [, res] = await this.prisma.$transaction([
+        this.prisma.aiReport.deleteMany({
+          where: { entityType: 'NEWS', entityId: { in: batch } },
+        }),
+        this.prisma.newsArticle.deleteMany({ where: { id: { in: batch } } }),
+      ]);
+      deleted += res.count;
+    }
+    return deleted;
+  }
+
+  /**
+   * Read-only id-cursor scan: pages through `fetch` batches and returns the ids
+   * of rows matching `isTarget`. Callers mutate only after the scan completes.
+   */
+  private async collectIds<Row extends { id: string }>(
+    fetch: (cursor: string | undefined) => Promise<Row[]>,
+    isTarget: (row: Row) => boolean,
+  ): Promise<string[]> {
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    for (;;) {
+      const rows = await fetch(cursor);
+      if (rows.length === 0) break;
+      cursor = rows[rows.length - 1].id;
+      for (const row of rows) {
+        if (isTarget(row)) ids.push(row.id);
+      }
+      if (rows.length < BATCH) break;
+    }
+    return ids;
   }
 }

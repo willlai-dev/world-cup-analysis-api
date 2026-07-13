@@ -618,14 +618,26 @@ export class MatchesService {
     return { scope: "prediction-scoring", scanned, scored, noPrediction, failed };
   }
 
+  /**
+   * Latest DONE pre-match analysis; falls back to the retro (賽前視角回補)
+   * report so finished matches whose original pre-match analysis was
+   * invalidated (e.g. non-Chinese output reset by maintenance) still show an
+   * analysis instead of nothing.
+   */
   async getAnalysis(matchId: string): Promise<AiReportDto | null> {
     await this.ensureExists(matchId);
-    return this.latestReport(matchId, ["MATCH_ANALYSIS"]);
+    return (
+      (await this.latestReport(matchId, ["MATCH_ANALYSIS"])) ??
+      (await this.latestReport(matchId, [RETRO_REPORT_TYPE]))
+    );
   }
 
   async getPostMatchReport(matchId: string): Promise<AiReportDto | null> {
     await this.ensureExists(matchId);
-    return this.latestReport(matchId, ["POST_MATCH_REPORT", "MATCH_ANALYSIS"]);
+    return (
+      (await this.latestReport(matchId, ["POST_MATCH_REPORT", "MATCH_ANALYSIS"])) ??
+      (await this.latestReport(matchId, [RETRO_REPORT_TYPE]))
+    );
   }
 
   async getPrediction(matchId: string): Promise<MatchPredictionDto> {
@@ -638,15 +650,27 @@ export class MatchesService {
         message: "Match not found",
       });
     }
-    const report = await this.prisma.aiReport.findFirst({
-      where: {
-        entityType: AiEntityType.MATCH,
-        entityId: matchId,
-        status: AiReportStatus.DONE,
-        reportType: { in: ["MATCH_PREDICTION", "MATCH_ANALYSIS"] },
-      },
-      orderBy: { createdAt: "desc" },
-    });
+    const report =
+      (await this.prisma.aiReport.findFirst({
+        where: {
+          entityType: AiEntityType.MATCH,
+          entityId: matchId,
+          status: AiReportStatus.DONE,
+          reportType: { in: ["MATCH_PREDICTION", "MATCH_ANALYSIS"] },
+        },
+        orderBy: { createdAt: "desc" },
+      })) ??
+      // Retro fallback mirrors getAnalysis: a finished match whose pre-match
+      // analysis was invalidated still gets its pre-kickoff-view leans shown.
+      (await this.prisma.aiReport.findFirst({
+        where: {
+          entityType: AiEntityType.MATCH,
+          entityId: matchId,
+          status: AiReportStatus.DONE,
+          reportType: RETRO_REPORT_TYPE,
+        },
+        orderBy: { createdAt: "desc" },
+      }));
     const structured = (report?.structuredJson ?? null) as {
       prediction?: {
         homeWinLean?: number;

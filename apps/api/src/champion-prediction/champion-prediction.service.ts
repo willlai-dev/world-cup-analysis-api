@@ -273,7 +273,13 @@ export class ChampionPredictionService {
     }));
   }
 
-  /** Resolves final-output entries to seeded teams by name; dedupes + re-ranks. */
+  /**
+   * Resolves final-output entries to seeded teams by name; dedupes + re-ranks.
+   * The final model is told to cover every remaining team but occasionally
+   * returns a partial list (e.g. only its favourite) — missing teams are
+   * topped up after the model's ranks, ordered by championScore, so the run
+   * always covers the full non-eliminated pool.
+   */
   private mapFinalEntries(data: ChampionAnalysisOutput, teams: Team[]): EntryCreate[] {
     const byName = new Map<string, Team>();
     for (const t of teams) {
@@ -300,6 +306,22 @@ export class ChampionPredictionService {
         risks: e.risks,
         aiComment: e.aiComment,
       });
+    }
+    if (entries.length > 0) {
+      for (const team of teams) {
+        if (used.has(team.id)) continue;
+        used.add(team.id);
+        entries.push({
+          teamId: team.id,
+          rank: rank++,
+          championScore: team.championScore ?? 0,
+          ratingTier: team.ratingTier,
+          probabilityText: '—',
+          strengths: [],
+          risks: [],
+          aiComment: DEGRADE_COMMENT,
+        });
+      }
     }
     return entries;
   }

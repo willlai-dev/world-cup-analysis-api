@@ -74,19 +74,20 @@ export class EmailFlowService {
     if (!check.ok) {
       throw check.error;
     }
-    // Recorded before the existence check so unknown emails burn cooldown too.
-    await this.recordSend(email, AuthTokenPurpose.EMAIL_VERIFICATION);
-
     const user = await this.prisma.user.findUnique({ where: { email } });
-    if (!user) {
-      // Do not reveal whether the address is registered.
-      return;
-    }
-    if (user.emailVerifiedAt) {
+    if (user?.emailVerifiedAt) {
+      // Nothing is sent, so no quota is burned — repeat calls stay 409, not 429.
       throw new ConflictException({
         code: 'EMAIL_ALREADY_VERIFIED',
         message: '此 Email 已完成驗證,請直接登入。',
       });
+    }
+    // Recorded for unknown and unverified addresses alike, so both burn the
+    // cooldown uniformly and the generic 200 below stays indistinguishable.
+    await this.recordSend(email, AuthTokenPurpose.EMAIL_VERIFICATION);
+    if (!user) {
+      // Do not reveal whether the address is registered.
+      return;
     }
     const token = await this.issueToken(
       user.id,

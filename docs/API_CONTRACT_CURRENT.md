@@ -510,7 +510,8 @@ Validation and behavior:
   - Invalid credentials return `401 INVALID_CREDENTIALS`.
   - Disabled accounts return `403 ACCOUNT_DISABLED`.
   - Correct credentials on an **unverified** account return `403 EMAIL_NOT_VERIFIED` and no
-    token/cookie of any kind — the frontend redirects to `/verify-email?email=…`.
+    token/cookie of any kind — the frontend redirects to `/verify-email` (the pending
+    email is handed over via sessionStorage, never the URL).
 - `POST /api/auth/logout`
   - Clears the auth cookie.
   - This route is protected. A Guest request is blocked before controller logic and returns `401 UNAUTHORIZED`.
@@ -1030,7 +1031,7 @@ Frontend handling guidance:
 - Treat `401 UNAUTHORIZED` from protected product APIs as unauthenticated or expired session.
   (This now includes sessions revoked by a password reset.)
 - Treat `403 ACCOUNT_DISABLED` as authenticated but blocked account.
-- Treat `403 EMAIL_NOT_VERIFIED` as "credentials OK but email unverified" → redirect to `/verify-email?email=…`.
+- Treat `403 EMAIL_NOT_VERIFIED` as "credentials OK but email unverified" → redirect to `/verify-email` (pass the email via sessionStorage, not the query string).
 - Treat `403 FORBIDDEN` as role mismatch.
 - Treat `404 NOT_FOUND` as missing resource.
 - Treat `409` conflicts by `error.code`, especially `EMAIL_ALREADY_REGISTERED`, `CANNOT_DISABLE_SELF`, and `LAST_ADMIN_PROTECTED`.

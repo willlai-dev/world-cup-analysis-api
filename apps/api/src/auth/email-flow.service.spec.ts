@@ -144,11 +144,14 @@ describe('EmailFlowService', () => {
       expect(mail.sendEmailVerification).not.toHaveBeenCalled();
     });
 
-    it('rejects an already-verified account with EMAIL_ALREADY_VERIFIED', async () => {
+    it('rejects an already-verified account with EMAIL_ALREADY_VERIFIED without burning quota', async () => {
       prisma.user.findUnique.mockResolvedValue(buildUser({ emailVerifiedAt: new Date() }));
       await expect(service.resendVerification('u@e.com')).rejects.toBeInstanceOf(
         ConflictException,
       );
+      // No mail goes out, so the attempt must not consume cooldown/daily quota
+      // (otherwise a second call would flip to 429 instead of 409).
+      expect(prisma.emailSendRequest.create).not.toHaveBeenCalled();
     });
   });
 

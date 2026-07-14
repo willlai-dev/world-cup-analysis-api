@@ -31,7 +31,7 @@ const MAX_TRACKED_KEYS = 10_000;
  */
 @Injectable()
 export class IpRateLimitGuard implements CanActivate {
-  private readonly hits = new Map<string, { count: number; windowStart: number }>();
+  private readonly hits = new Map<string, { count: number; windowStart: number; expiresAt: number }>();
 
   constructor(private readonly reflector: Reflector) {}
 
@@ -50,9 +50,9 @@ export class IpRateLimitGuard implements CanActivate {
     const windowMs = options.windowSeconds * 1000;
 
     const entry = this.hits.get(key);
-    if (!entry || now - entry.windowStart >= windowMs) {
+    if (!entry || now >= entry.expiresAt) {
       this.prune(now);
-      this.hits.set(key, { count: 1, windowStart: now });
+      this.hits.set(key, { count: 1, windowStart: now, expiresAt: now + windowMs });
       return true;
     }
 
@@ -71,16 +71,31 @@ export class IpRateLimitGuard implements CanActivate {
     return true;
   }
 
-  /** Drops stale windows so the map cannot grow without bound. */
+  /**
+   * Hard-caps the map at MAX_TRACKED_KEYS: expired windows go first; if every
+   * window is still live (high-cardinality flood), the oldest insertions are
+   * evicted. Losing a live counter under such a flood is acceptable — per-IP
+   * limiting is already ineffective against that traffic, bounded memory isn't.
+   */
   private prune(now: number): void {
     if (this.hits.size < MAX_TRACKED_KEYS) {
       return;
     }
     for (const [key, entry] of this.hits) {
-      // Windows are ≤ a few minutes; anything older than an hour is stale.
-      if (now - entry.windowStart > 60 * 60 * 1000) {
+      if (now >= entry.expiresAt) {
         this.hits.delete(key);
       }
+    }
+    let excess = this.hits.size - MAX_TRACKED_KEYS + 1;
+    if (excess <= 0) {
+      return;
+    }
+    // Map iteration follows insertion order — the first keys are the oldest.
+    for (const key of this.hits.keys()) {
+      if (excess-- <= 0) {
+        break;
+      }
+      this.hits.delete(key);
     }
   }
 

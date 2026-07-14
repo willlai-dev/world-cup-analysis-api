@@ -638,6 +638,10 @@ describe("AI World Cup Analyst API (e2e)", () => {
       const res = await request(http).post("/api/auth/resend-verification").send({ email });
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe("EMAIL_ALREADY_VERIFIED");
+      // The 409 must not burn cooldown quota — an immediate retry stays 409, not 429.
+      const again = await request(http).post("/api/auth/resend-verification").send({ email });
+      expect(again.status).toBe(409);
+      expect(again.body.error.code).toBe("EMAIL_ALREADY_VERIFIED");
     });
 
     it("43. forgot-password never reveals whether the email exists", async () => {

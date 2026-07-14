@@ -101,6 +101,13 @@ const CATEGORY_KEYWORDS: Record<GeneralChatCategory, string[]> = {
 const CATEGORY_ORDER: GeneralChatCategory[] = ['CHAMPION', 'MATCH', 'TEAM', 'PLAYER', 'NEWS'];
 
 /**
+ * Forecast wording. Champion questions always carry an explicit CHAMPION cue
+ * (冠軍/奪冠…), so a prediction question with no category keyword at all is
+ * about match forecasts → default it to MATCH instead of UNKNOWN.
+ */
+const PREDICTION_KEYWORDS = ['預測', '預估', 'predict'];
+
+/**
  * Classifies a general-chat question into data categories using keyword rules.
  * Zero DB / AI access — pure and cheap so it is trivially unit-testable.
  */
@@ -111,7 +118,11 @@ export class QuestionIntentResolver {
     const categories = CATEGORY_ORDER.filter((cat) =>
       CATEGORY_KEYWORDS[cat].some((kw) => q.includes(kw.toLowerCase())),
     );
-    return { intent: this.collapse(categories), categories };
+    const wantsPrediction = PREDICTION_KEYWORDS.some((kw) => q.includes(kw));
+    if (categories.length === 0 && wantsPrediction) {
+      categories.push('MATCH');
+    }
+    return { intent: this.collapse(categories), categories, wantsPrediction };
   }
 
   private collapse(categories: GeneralChatCategory[]): GeneralChatIntent {

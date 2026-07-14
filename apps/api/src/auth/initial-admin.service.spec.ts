@@ -108,11 +108,32 @@ describe("InitialAdminService", () => {
       displayName: "Initial Admin",
       role: UserRole.ADMIN,
       status: UserStatus.ACTIVE,
+      emailVerifiedAt: new Date(),
     });
 
     await service.onApplicationBootstrap();
 
     expect(prisma.user.create).not.toHaveBeenCalled();
     expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it("backfills emailVerifiedAt on a matching but unverified admin", async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: "seed-user-admin",
+      email: "admin@example.com",
+      passwordHash: bcrypt.hashSync("admin123456", 10),
+      displayName: "Initial Admin",
+      role: UserRole.ADMIN,
+      status: UserStatus.ACTIVE,
+      emailVerifiedAt: null,
+    });
+
+    await service.onApplicationBootstrap();
+
+    expect(prisma.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { emailVerifiedAt: expect.any(Date) },
+      }),
+    );
   });
 });

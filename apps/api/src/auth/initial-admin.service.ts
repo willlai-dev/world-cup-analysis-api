@@ -36,6 +36,7 @@ export class InitialAdminService implements OnApplicationBootstrap {
           displayName,
           role: UserRole.ADMIN,
           status: UserStatus.ACTIVE,
+          emailVerifiedAt: new Date(),
           profile: { create: { nickname: displayName } },
         },
       });
@@ -53,6 +54,7 @@ export class InitialAdminService implements OnApplicationBootstrap {
       role?: UserRole;
       status?: UserStatus;
       passwordHash?: string;
+      emailVerifiedAt?: Date;
     } = {};
 
     if (existing.email !== email) {
@@ -69,6 +71,9 @@ export class InitialAdminService implements OnApplicationBootstrap {
     }
     if (shouldRefreshPassword) {
       data.passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    }
+    if (!existing.emailVerifiedAt) {
+      data.emailVerifiedAt = new Date();
     }
 
     if (Object.keys(data).length === 0) {

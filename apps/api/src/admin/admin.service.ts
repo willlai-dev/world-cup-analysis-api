@@ -233,7 +233,7 @@ export class AdminService {
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) {
       throw new ConflictException({
-        code: "EMAIL_TAKEN",
+        code: "EMAIL_ALREADY_REGISTERED",
         message: "Email already registered",
       });
     }
@@ -245,6 +245,8 @@ export class AdminService {
         displayName,
         role,
         status: UserStatus.ACTIVE,
+        // Admin-created accounts are trusted — no verification round-trip.
+        emailVerifiedAt: new Date(),
         profile: { create: {} },
       },
     });

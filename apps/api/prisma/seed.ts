@@ -63,6 +63,7 @@ async function seedUsers(): Promise<void> {
         displayName: acc.displayName,
         role: acc.role,
         status: UserStatus.ACTIVE,
+        emailVerifiedAt: new Date(),
         profile: { create: { nickname: acc.displayName } },
       },
       update: {
@@ -70,6 +71,7 @@ async function seedUsers(): Promise<void> {
         displayName: acc.displayName,
         role: acc.role,
         passwordHash,
+        emailVerifiedAt: new Date(),
       },
     });
   }

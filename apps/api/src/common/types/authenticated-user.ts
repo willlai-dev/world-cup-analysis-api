@@ -12,4 +12,6 @@ export interface JwtPayload {
   sub: string;
   email: string;
   role: UserRole;
+  /** tokenVersion at issue time; mismatch with the DB revokes the session. */
+  tv?: number;
 }

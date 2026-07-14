@@ -212,6 +212,8 @@ type UserDto = {
   displayName: string;
   role: UserRole;
   status: UserStatus;
+  /** false until the registration email-verification link is consumed. */
+  emailVerified: boolean;
 };
 
 type MeDto = UserDto & {
@@ -451,12 +453,16 @@ Notes:
 
 ### 5.2 Auth
 
-| Method | Path                 | Status | Access              | Request                            | Success `data`                            |
-| ------ | -------------------- | ------ | ------------------- | ---------------------------------- | ----------------------------------------- |
-| POST   | `/api/auth/register` | 201    | Public              | `{ email, password, displayName }` | `{ user: UserDto }`                       |
-| POST   | `/api/auth/login`    | 200    | Public              | `{ email, password }`              | `{ user: UserDto, redirectPath: string }` |
-| POST   | `/api/auth/logout`   | 200    | JWT cookie required | none                               | `{ success: true }`                       |
-| GET    | `/api/auth/me`       | 200    | JWT cookie required | none                               | `UserDto`                                 |
+| Method | Path                            | Status | Access              | Request                                     | Success `data`                                            |
+| ------ | ------------------------------- | ------ | ------------------- | ------------------------------------------- | ---------------------------------------------------------- |
+| POST   | `/api/auth/register`            | 201    | Public              | `{ email, password, displayName }`          | `{ user: UserDto, requiresEmailVerification: boolean }`    |
+| POST   | `/api/auth/verify-email`        | 200    | Public              | `{ token }`                                 | `{ success: true, message: string }`                       |
+| POST   | `/api/auth/resend-verification` | 200    | Public              | `{ email }`                                 | `{ success: true, message: string }`                       |
+| POST   | `/api/auth/forgot-password`     | 200    | Public              | `{ email }`                                 | `{ success: true, message: string }`                       |
+| POST   | `/api/auth/reset-password`      | 200    | Public              | `{ token, newPassword, confirmPassword }`   | `{ success: true, message: string }`                       |
+| POST   | `/api/auth/login`               | 200    | Public              | `{ email, password }`                       | `{ user: UserDto, redirectPath: string }`                  |
+| POST   | `/api/auth/logout`              | 200    | JWT cookie required | none                                        | `{ success: true }`                                        |
+| GET    | `/api/auth/me`                  | 200    | JWT cookie required | none                                        | `UserDto`                                                  |
 
 Validation and behavior:
 
@@ -465,7 +471,37 @@ Validation and behavior:
   - `password` length must be `8..100`.
   - `displayName` length must be `1..60`.
   - Always creates a `USER` account. There is no role input.
-  - Duplicate email returns `409 EMAIL_TAKEN`.
+  - The account starts **unverified** (`emailVerified: false`); a verification mail with a
+    15-minute single-use link (`FRONTEND_URL/verify-email?token=…`) is sent.
+  - Duplicate **verified** email returns `409 EMAIL_ALREADY_REGISTERED`.
+  - Duplicate **unverified** email does NOT create a duplicate: it returns `201` with the
+    existing (sanitized) user and `requiresEmailVerification: true`, and re-sends the
+    verification mail if the cooldown allows (silently skipped otherwise). Credentials of the
+    pending account are never overwritten.
+- `POST /api/auth/verify-email`
+  - Consumes the raw token from the mail link. Single use; purpose- and TTL-bound.
+  - Errors: `400 EMAIL_VERIFICATION_TOKEN_INVALID` (unknown / used / superseded token),
+    `400 EMAIL_VERIFICATION_TOKEN_EXPIRED`.
+- `POST /api/auth/resend-verification`
+  - Per-email limits: `429 EMAIL_SEND_COOLDOWN` inside 60 s (details: `retryAfterSeconds`,
+    `resetAt`), `429 EMAIL_DAILY_LIMIT_EXCEEDED` after 5 sends in 24 h (details: `resetAt`).
+  - Re-sending invalidates all previously issued verification tokens.
+  - Unknown emails return the same generic `200` success (no enumeration).
+  - Already-verified accounts return `409 EMAIL_ALREADY_VERIFIED`.
+- `POST /api/auth/forgot-password`
+  - **Always** returns the same `200` body whether or not the email exists — never
+    `EMAIL_NOT_FOUND`. The cooldown / daily-limit `429`s trigger before the account lookup and
+    apply uniformly to unknown emails too (limits are tracked per SHA-256 email hash).
+  - Sends a 15-minute single-use reset link (`FRONTEND_URL/reset-password?token=…`) for
+    `ACTIVE` accounts. A newer request invalidates all earlier reset tokens.
+- `POST /api/auth/reset-password`
+  - `newPassword`/`confirmPassword` length `8..100`; mismatch → `400 PASSWORD_MISMATCH`.
+  - Errors: `400 PASSWORD_RESET_TOKEN_INVALID` (unknown / superseded),
+    `400 PASSWORD_RESET_TOKEN_USED`, `400 PASSWORD_RESET_TOKEN_EXPIRED`.
+  - On success: revokes **all** existing sessions (JWT `tv`/`tokenVersion` mismatch → `401`),
+    does NOT auto-login, and sends a「密碼已變更」notification mail.
+- The four token/mail routes above also carry a basic per-IP rate limit
+  (`429 TOO_MANY_REQUESTS`, details: `retryAfterSeconds`).
 - `POST /api/auth/login`
   - `email` must be a valid email.
   - `password` length must be at least `1`.
@@ -473,12 +509,20 @@ Validation and behavior:
   - `redirectPath` is `/admin/accounts` for `ADMIN`, `/matches` for `USER` and `PREMIUM`.
   - Invalid credentials return `401 INVALID_CREDENTIALS`.
   - Disabled accounts return `403 ACCOUNT_DISABLED`.
+  - Correct credentials on an **unverified** account return `403 EMAIL_NOT_VERIFIED` and no
+    token/cookie of any kind — the frontend redirects to `/verify-email?email=…`.
 - `POST /api/auth/logout`
   - Clears the auth cookie.
   - This route is protected. A Guest request is blocked before controller logic and returns `401 UNAUTHORIZED`.
 - `GET /api/auth/me`
   - Returns only `UserDto`.
   - It does not include user profile fields. Use `GET /api/users/me` for profile data.
+
+Mail infrastructure: provider abstraction in `src/mail/` (`MAIL_PROVIDER` env: `smtp`/`gmail`
+→ nodemailer SMTP, `fake` → in-memory). `NODE_ENV=test` always forces the fake provider.
+All mails ship HTML + plain text. Tokens are 32 random bytes; only SHA-256 hashes are stored
+(`AuthToken`), and raw tokens/links/credentials are never logged. Accounts existing before the
+migration are treated as already verified.
 
 ### 5.3 Users
 
@@ -519,7 +563,8 @@ Validation and behavior:
 - `POST /api/admin/users`
   - `password` length must be `8..100`.
   - `displayName` length must be `1..60`.
-  - Duplicate email returns `409 EMAIL_TAKEN`.
+  - Duplicate email returns `409 EMAIL_ALREADY_REGISTERED`.
+  - Admin-created accounts are auto-verified (`emailVerified: true`) — no mail round-trip.
 - `PATCH /api/admin/users/:userId/role`
   - Prevents demoting the last active admin.
   - Conflict returns `409 LAST_ADMIN_PROTECTED`.
@@ -961,7 +1006,18 @@ These are the concrete `error.code` values currently thrown in application code.
 - `FORBIDDEN`
 - `ACCOUNT_DISABLED`
 - `INVALID_CREDENTIALS`
-- `EMAIL_TAKEN`
+- `EMAIL_ALREADY_REGISTERED` (409; replaces the former `EMAIL_TAKEN`)
+- `EMAIL_NOT_VERIFIED` (403, login with correct credentials on an unverified account)
+- `EMAIL_ALREADY_VERIFIED` (409, resend-verification for a verified account)
+- `EMAIL_VERIFICATION_TOKEN_INVALID` (400)
+- `EMAIL_VERIFICATION_TOKEN_EXPIRED` (400)
+- `EMAIL_SEND_COOLDOWN` (429, `details.retryAfterSeconds` / `details.resetAt`)
+- `EMAIL_DAILY_LIMIT_EXCEEDED` (429, `details.resetAt`)
+- `PASSWORD_RESET_TOKEN_INVALID` (400)
+- `PASSWORD_RESET_TOKEN_EXPIRED` (400)
+- `PASSWORD_RESET_TOKEN_USED` (400)
+- `PASSWORD_MISMATCH` (400)
+- `TOO_MANY_REQUESTS` (429, per-IP limiter on the token/mail auth routes)
 - `NOT_FOUND`
 - `CANNOT_DISABLE_SELF`
 - `LAST_ADMIN_PROTECTED`
@@ -972,9 +1028,11 @@ These are the concrete `error.code` values currently thrown in application code.
 Frontend handling guidance:
 
 - Treat `401 UNAUTHORIZED` from protected product APIs as unauthenticated or expired session.
+  (This now includes sessions revoked by a password reset.)
 - Treat `403 ACCOUNT_DISABLED` as authenticated but blocked account.
+- Treat `403 EMAIL_NOT_VERIFIED` as "credentials OK but email unverified" → redirect to `/verify-email?email=…`.
 - Treat `403 FORBIDDEN` as role mismatch.
 - Treat `404 NOT_FOUND` as missing resource.
-- Treat `409` conflicts by `error.code`, especially `EMAIL_TAKEN`, `CANNOT_DISABLE_SELF`, and `LAST_ADMIN_PROTECTED`.
+- Treat `409` conflicts by `error.code`, especially `EMAIL_ALREADY_REGISTERED`, `CANNOT_DISABLE_SELF`, and `LAST_ADMIN_PROTECTED`.
 - Treat `429 AI_QUOTA_EXCEEDED` as quota exhaustion: show `error.message` and use `error.details.resetAt` for a "try again after" hint (see §5.12).
 - When validation errors contain multiple messages, current backend joins them into a single `error.message` string separated by `; ` and also places the array into `error.details`.

@@ -66,6 +66,28 @@ export class AppConfigService {
     };
   }
 
+  get mail() {
+    return {
+      // Tests must never send real mail (spec) — force the fake provider.
+      provider: this.isTest ? ("fake" as const) : this.get("MAIL_PROVIDER"),
+      smtpHost: this.get("SMTP_HOST"),
+      smtpPort: this.get("SMTP_PORT"),
+      smtpSecure: this.get("SMTP_SECURE"),
+      smtpUser: this.get("SMTP_USER"),
+      smtpPassword: this.get("SMTP_APP_PASSWORD"),
+      fromName: this.get("MAIL_FROM_NAME"),
+      fromEmail: this.get("MAIL_FROM_EMAIL") || this.get("SMTP_USER"),
+    };
+  }
+  get authTokens() {
+    return {
+      verifyTtlMinutes: this.get("EMAIL_VERIFY_TOKEN_TTL_MINUTES"),
+      resetTtlMinutes: this.get("PASSWORD_RESET_TOKEN_TTL_MINUTES"),
+      resendCooldownSeconds: this.get("EMAIL_RESEND_COOLDOWN_SECONDS"),
+      dailyLimit: this.get("EMAIL_DAILY_LIMIT"),
+    };
+  }
+
   get aiMockMode(): boolean {
     return this.get("AI_MOCK_MODE");
   }

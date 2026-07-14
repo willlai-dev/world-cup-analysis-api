@@ -22,6 +22,8 @@ export type IntentResolution = {
   intent: GeneralChatIntent;
   /** Every category with at least one keyword hit, in priority order. */
   categories: GeneralChatCategory[];
+  /** Question asks about forecasts (預測/預估) — match slices should carry prediction data. */
+  wantsPrediction: boolean;
 };
 
 export type MatchedTeam = {

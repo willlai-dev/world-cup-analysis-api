@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { JobStatus, MatchStatus } from '@prisma/client';
+import { AiEntityType, AiReportStatus, JobStatus, MatchStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EntityMatcher } from './entity-matcher.service';
 import { QuestionIntentResolver } from './question-intent.resolver';
@@ -53,7 +53,7 @@ export class GeneralChatContextService {
    *   Intent is still classified from the current question alone.
    */
   async build(question: string, priorText = ''): Promise<GeneralChatContext> {
-    const { categories } = this.resolver.resolve(question);
+    const { categories, wantsPrediction } = this.resolver.resolve(question);
     const matchText = priorText ? `${question} ${priorText}` : question;
     const entities = await this.matcher.match(matchText);
     const teamIds = entities.teams.map((t) => t.id);
@@ -83,7 +83,7 @@ export class GeneralChatContextService {
     // keyword fired. Players carry their teamId, so「Mbappe 下一場」resolves too.
     const fixtureTeamIds = [...new Set([...teamIds, ...entities.players.map((p) => p.teamId)])];
     if (fixtureTeamIds.length) {
-      const fixtures = await this.loadMatches(fixtureTeamIds);
+      const fixtures = await this.loadMatches(fixtureTeamIds, wantsPrediction);
       if (fixtures.items.length) {
         context.matches = fixtures.items;
         // Reference time so the model can resolve「接下來/今天/明天」against kickoff (UTC).
@@ -105,7 +105,7 @@ export class GeneralChatContextService {
     // General match questions with no named entity (fixtures are already bundled
     // above when an entity was named).
     if (cats.has('MATCH') && !context.matches) {
-      const matches = await this.loadMatches(teamIds);
+      const matches = await this.loadMatches(teamIds, wantsPrediction);
       if (matches.items.length) {
         context.matches = matches.items;
         // Reference time so the model can resolve「今天/明天」against kickoff (UTC).
@@ -220,7 +220,7 @@ export class GeneralChatContextService {
     };
   }
 
-  private async loadMatches(teamIds: string[]): Promise<Slice<unknown>> {
+  private async loadMatches(teamIds: string[], includePredictions = false): Promise<Slice<unknown>> {
     if (teamIds.length) {
       const rows = await this.prisma.match.findMany({
         where: { OR: [{ homeTeamId: { in: teamIds } }, { awayTeamId: { in: teamIds } }] },
@@ -228,7 +228,7 @@ export class GeneralChatContextService {
         take: MAX_MATCHES,
         select: this.matchSelect(),
       });
-      return this.toMatchSlice(rows);
+      return this.toMatchSlice(rows, await this.loadPredictions(rows, includePredictions));
     }
 
     // No specific team: recent finished (for「最近/昨天」) + any live + a broad
@@ -256,7 +256,96 @@ export class GeneralChatContextService {
       }),
     ]);
     // recent is newest-first → reverse to chronological, then live, then upcoming.
-    return this.toMatchSlice([...recent.reverse(), ...live, ...upcoming]);
+    const rows = [...recent.reverse(), ...live, ...upcoming];
+    return this.toMatchSlice(rows, await this.loadPredictions(rows, includePredictions));
+  }
+
+  /**
+   * Per-match forecast slices, keyed by match id — only fetched for 預測-flavoured
+   * questions to keep ordinary fixture snapshots small. Settled matches use
+   * MatchPredictionOutcome (leans + hit metrics; `retro` marks a post-hoc
+   * backfilled prediction that must not be presented as a real pre-match call);
+   * unsettled ones fall back to the latest DONE pre-match report's leans.
+   */
+  private async loadPredictions(
+    rows: { id: string }[],
+    includePredictions: boolean,
+  ): Promise<Map<string, Record<string, unknown>> | undefined> {
+    if (!includePredictions || rows.length === 0) return undefined;
+    const matchIds = rows.map((r) => r.id);
+
+    const [outcomes, reports] = await Promise.all([
+      this.prisma.matchPredictionOutcome.findMany({
+        where: { matchId: { in: matchIds } },
+        select: {
+          matchId: true,
+          homeWinLean: true,
+          drawLean: true,
+          awayWinLean: true,
+          tendencyPredicted: true,
+          tendencyHit: true,
+          exactScoreHit: true,
+          retro: true,
+          predictedAt: true,
+        },
+      }),
+      this.prisma.aiReport.findMany({
+        where: {
+          entityType: AiEntityType.MATCH,
+          entityId: { in: matchIds },
+          status: AiReportStatus.DONE,
+          reportType: { in: ['MATCH_PREDICTION', 'MATCH_ANALYSIS'] },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { entityId: true, structuredJson: true, createdAt: true },
+      }),
+    ]);
+
+    const byMatch = new Map<string, Record<string, unknown>>();
+    for (const o of outcomes) {
+      byMatch.set(o.matchId, {
+        homeWinLean: o.homeWinLean,
+        drawLean: o.drawLean,
+        awayWinLean: o.awayWinLean,
+        predictedTendency: o.tendencyPredicted,
+        tendencyHit: o.tendencyHit,
+        exactScoreHit: o.exactScoreHit,
+        retro: o.retro,
+        ...(o.retro ? { note: '賽後回補之預測，非真實賽前預測' } : {}),
+        predictedAt: iso(o.predictedAt),
+      });
+    }
+    // reports are newest-first, so the first one seen per match wins.
+    for (const r of reports) {
+      if (!r.entityId || byMatch.has(r.entityId)) continue;
+      const pred = this.reportPrediction(r.structuredJson);
+      if (pred) {
+        byMatch.set(r.entityId, { ...pred, predictedAt: iso(r.createdAt) });
+      }
+    }
+    return byMatch;
+  }
+
+  /** Extracts the compact lean/scoreline snapshot from a pre-match report. */
+  private reportPrediction(structuredJson: unknown): Record<string, unknown> | null {
+    const s = structuredJson as {
+      prediction?: { homeWinLean?: number; drawLean?: number; awayWinLean?: number };
+      likelyScorelines?: { score?: string }[];
+    } | null;
+    const pred = s?.prediction;
+    if (!pred || (pred.homeWinLean == null && pred.drawLean == null && pred.awayWinLean == null)) {
+      return null;
+    }
+    const likelyScorelines = (s?.likelyScorelines ?? [])
+      .map((x) => x?.score)
+      .filter((score): score is string => Boolean(score))
+      .slice(0, 3);
+    return {
+      homeWinLean: pred.homeWinLean ?? null,
+      drawLean: pred.drawLean ?? null,
+      awayWinLean: pred.awayWinLean ?? null,
+      ...(likelyScorelines.length ? { likelyScorelines } : {}),
+    };
   }
 
   private async loadPlayers(playerIds: string[], teamIds: string[]): Promise<Slice<unknown>> {
@@ -422,6 +511,7 @@ export class GeneralChatContextService {
 
   private matchSelect() {
     return {
+      id: true,
       kickoffAt: true,
       status: true,
       stage: true,
@@ -436,6 +526,7 @@ export class GeneralChatContextService {
 
   private toMatchSlice(
     rows: {
+      id: string;
       kickoffAt: Date;
       status: string;
       stage: string;
@@ -446,6 +537,7 @@ export class GeneralChatContextService {
       homeTeam: { nameEn: string; nameZh: string | null };
       awayTeam: { nameEn: string; nameZh: string | null };
     }[],
+    predictions?: Map<string, Record<string, unknown>>,
   ): Slice<unknown> {
     const items = rows.map((m) => ({
       home: displayName(m.homeTeam.nameZh, m.homeTeam.nameEn),
@@ -456,6 +548,8 @@ export class GeneralChatContextService {
       status: m.status,
       score:
         m.homeScore != null && m.awayScore != null ? `${m.homeScore}-${m.awayScore}` : null,
+      // JSON.stringify drops the key entirely for non-prediction questions.
+      prediction: predictions?.get(m.id),
     }));
     return { items, sources: rows.map((m) => m.sourceUpdatedAt ?? m.kickoffAt) };
   }

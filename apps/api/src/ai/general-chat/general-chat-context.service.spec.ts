@@ -49,6 +49,8 @@ function build() {
     player: { findMany: jest.fn().mockResolvedValue([]) },
     championPredictionRun: { findFirst: jest.fn().mockResolvedValue(null) },
     match: { findMany: jest.fn().mockResolvedValue([]) },
+    matchPredictionOutcome: { findMany: jest.fn().mockResolvedValue([]) },
+    aiReport: { findMany: jest.fn().mockResolvedValue([]) },
     newsArticle: { findMany: jest.fn().mockResolvedValue([]) },
   };
   const matcher = { match: jest.fn().mockResolvedValue({ teams: [], players: [] }) };
@@ -251,6 +253,156 @@ describe('GeneralChatContextService', () => {
     // matcher receives current question + prior text so 「他」 resolves to Mbappé
     expect(matcher.match).toHaveBeenCalledWith('他狀態如何？ Mbappe 是誰');
     expect(res.context).toHaveProperty('players');
+  });
+
+  it('attaches settled prediction outcomes to finished matches for a 預測 question', async () => {
+    const { service, prisma, matcher } = build();
+    matcher.match.mockResolvedValue(emptyEntities);
+    const finished = {
+      id: 'm1',
+      kickoffAt: NOW,
+      status: 'FINISHED',
+      stage: 'QUARTER_FINAL',
+      groupName: null,
+      homeScore: 3,
+      awayScore: 1,
+      sourceUpdatedAt: NOW,
+      homeTeam: { nameEn: 'Argentina', nameZh: '阿根廷' },
+      awayTeam: { nameEn: 'Switzerland', nameZh: '瑞士' },
+    };
+    prisma.match.findMany
+      .mockResolvedValueOnce([finished])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    prisma.matchPredictionOutcome.findMany.mockResolvedValue([
+      {
+        matchId: 'm1',
+        homeWinLean: 55,
+        drawLean: 25,
+        awayWinLean: 20,
+        tendencyPredicted: 'HOME',
+        tendencyHit: true,
+        exactScoreHit: false,
+        retro: false,
+        predictedAt: NOW,
+      },
+    ]);
+
+    const res = await service.build('最近一次賽事的預測如何');
+
+    const matches = (res.context as { matches: { prediction?: unknown }[] }).matches;
+    expect(matches[0].prediction).toMatchObject({
+      homeWinLean: 55,
+      predictedTendency: 'HOME',
+      tendencyHit: true,
+      retro: false,
+    });
+    // Outcome lookup scoped to the snapshot's match ids.
+    expect(prisma.matchPredictionOutcome.findMany.mock.calls[0][0].where).toEqual({
+      matchId: { in: ['m1'] },
+    });
+  });
+
+  it('routes the bare 預測 question (賽事 typo) to match context, not the generic fallback', async () => {
+    const { service, prisma, matcher } = build();
+    matcher.match.mockResolvedValue(emptyEntities);
+    prisma.match.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 'm1',
+          kickoffAt: NOW,
+          status: 'FINISHED',
+          stage: 'QUARTER_FINAL',
+          groupName: null,
+          homeScore: 3,
+          awayScore: 1,
+          sourceUpdatedAt: NOW,
+          homeTeam: { nameEn: 'Argentina', nameZh: '阿根廷' },
+          awayTeam: { nameEn: 'Switzerland', nameZh: '瑞士' },
+        },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    const res = await service.build('最近一次賽是預測如何');
+
+    expect(res.context).toHaveProperty('matches');
+    // MATCH fallback fired → generic champion/news fallback must not run.
+    expect(res.context).not.toHaveProperty('championPrediction');
+  });
+
+  it('falls back to the latest pre-match report leans for unsettled matches', async () => {
+    const { service, prisma, matcher } = build();
+    matcher.match.mockResolvedValue(emptyEntities);
+    prisma.match.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'm2',
+          kickoffAt: NOW,
+          status: 'SCHEDULED',
+          stage: 'SEMI_FINAL',
+          groupName: null,
+          homeScore: null,
+          awayScore: null,
+          sourceUpdatedAt: NOW,
+          homeTeam: { nameEn: 'France', nameZh: '法國' },
+          awayTeam: { nameEn: 'Spain', nameZh: '西班牙' },
+        },
+      ]);
+    prisma.aiReport.findMany.mockResolvedValue([
+      {
+        entityId: 'm2',
+        createdAt: NOW,
+        structuredJson: {
+          prediction: { homeWinLean: 40, drawLean: 30, awayWinLean: 30 },
+          likelyScorelines: [
+            { score: '2-1' },
+            { score: '1-1' },
+            { score: '2-0' },
+            { score: '3-0' },
+          ],
+        },
+      },
+    ]);
+
+    const res = await service.build('這場賽事的預測如何');
+
+    const matches = (res.context as { matches: { prediction?: unknown }[] }).matches;
+    expect(matches[0].prediction).toMatchObject({
+      homeWinLean: 40,
+      likelyScorelines: ['2-1', '1-1', '2-0'], // capped at 3
+    });
+  });
+
+  it('does not query predictions for a plain fixtures question', async () => {
+    const { service, prisma, matcher } = build();
+    matcher.match.mockResolvedValue(emptyEntities);
+    prisma.match.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'm2',
+          kickoffAt: NOW,
+          status: 'SCHEDULED',
+          stage: 'SEMI_FINAL',
+          groupName: null,
+          homeScore: null,
+          awayScore: null,
+          sourceUpdatedAt: NOW,
+          homeTeam: { nameEn: 'France', nameZh: '法國' },
+          awayTeam: { nameEn: 'Spain', nameZh: '西班牙' },
+        },
+      ]);
+
+    const res = await service.build('今天有哪些比賽');
+
+    const matches = (res.context as { matches: { prediction?: unknown }[] }).matches;
+    expect(matches[0].prediction).toBeUndefined();
+    expect(prisma.matchPredictionOutcome.findMany).not.toHaveBeenCalled();
+    expect(prisma.aiReport.findMany).not.toHaveBeenCalled();
   });
 
   it('falls back to champion/matches/news for an UNKNOWN question with data present', async () => {

@@ -48,6 +48,30 @@ describe('QuestionIntentResolver', () => {
     const res = resolver.resolve('你好嗎');
     expect(res.intent).toBe('UNKNOWN');
     expect(res.categories).toEqual([]);
+    expect(res.wantsPrediction).toBe(false);
+  });
+
+  it('defaults a bare prediction question (賽事 typo) to MATCH_QUERY', () => {
+    const res = resolver.resolve('最近一次賽是預測如何');
+    expect(res.intent).toBe('MATCH_QUERY');
+    expect(res.categories).toEqual(['MATCH']);
+    expect(res.wantsPrediction).toBe(true);
+  });
+
+  it('flags wantsPrediction on a match prediction question', () => {
+    const res = resolver.resolve('最近一次賽事的預測如何');
+    expect(res.categories).toEqual(['MATCH']);
+    expect(res.wantsPrediction).toBe(true);
+  });
+
+  it('keeps champion prediction questions CHAMPION-only (no MATCH fallback)', () => {
+    const res = resolver.resolve('目前冠軍預測前三名是誰？');
+    expect(res.categories).toEqual(['CHAMPION']);
+    expect(res.wantsPrediction).toBe(true);
+  });
+
+  it('does not flag wantsPrediction on a plain fixtures question', () => {
+    expect(resolver.resolve('今天有哪些比賽').wantsPrediction).toBe(false);
   });
 
   it('matches English keywords case-insensitively', () => {

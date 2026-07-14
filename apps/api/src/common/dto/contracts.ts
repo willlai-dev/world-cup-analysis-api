@@ -7,6 +7,8 @@ export type UserDto = {
   displayName: string;
   role: 'USER' | 'PREMIUM' | 'ADMIN';
   status: 'ACTIVE' | 'DISABLED';
+  /** false until the registration email-verification link is consumed. */
+  emailVerified: boolean;
 };
 
 export type TeamSummary = {

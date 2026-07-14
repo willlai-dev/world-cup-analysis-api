@@ -1,11 +1,13 @@
 import { Module } from "@nestjs/common";
 import { APP_GUARD } from "@nestjs/core";
 import { JwtModule } from "@nestjs/jwt";
+import { IpRateLimitGuard } from "../common/guards/ip-rate-limit.guard";
 import { JwtAuthGuard } from "../common/guards/jwt-auth.guard";
 import { RolesGuard } from "../common/guards/roles.guard";
 import { AppConfigService } from "../config/app-config.service";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
+import { EmailFlowService } from "./email-flow.service";
 import { InitialAdminService } from "./initial-admin.service";
 import { TokenService } from "./token.service";
 
@@ -23,8 +25,10 @@ import { TokenService } from "./token.service";
   controllers: [AuthController],
   providers: [
     AuthService,
+    EmailFlowService,
     InitialAdminService,
     TokenService,
+    IpRateLimitGuard,
     // Global authentication guard (skips @Public routes), then role gate.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },

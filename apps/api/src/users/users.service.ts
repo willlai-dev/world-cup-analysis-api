@@ -26,6 +26,7 @@ export class UsersService {
       displayName: user.displayName,
       role: user.role,
       status: user.status,
+      emailVerified: user.emailVerifiedAt != null,
       profile: user.profile
         ? { nickname: user.profile.nickname, avatarUrl: user.profile.avatarUrl, bio: user.profile.bio }
         : null,

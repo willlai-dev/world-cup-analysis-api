@@ -1,10 +1,16 @@
+import { createHash } from "node:crypto";
 import type { NestFastifyApplication } from "@nestjs/platform-fastify";
+import { AuthTokenPurpose } from "@prisma/client";
 import request from "supertest";
+import { IpRateLimitGuard } from "../src/common/guards/ip-rate-limit.guard";
+import { PrismaService } from "../src/prisma/prisma.service";
 import {
+  getFakeMailbox,
   login,
   registerFreshPremium,
   registerFreshUser,
   SEED_CREDENTIALS,
+  verifyEmailFromMailbox,
 } from "./setup/auth.helper";
 import { createTestApp } from "./setup/test-app.factory";
 
@@ -470,5 +476,284 @@ describe("AI World Cup Analyst API (e2e)", () => {
       "GENERATE_TEAM_RATINGS",
       "GENERATE_PLAYER_STATUS",
     ]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Email verification & password reset
+  // ---------------------------------------------------------------------------
+
+  describe("Email verification & password reset", () => {
+    let prisma: PrismaService;
+
+    const emailHash = (email: string): string =>
+      createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
+
+    /** Registers without completing verification; the mail stays in the fake box. */
+    const registerUnverified = async (label: string) => {
+      const email = `${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.com`;
+      const password = "password123";
+      const res = await request(http)
+        .post("/api/auth/register")
+        .send({ email, password, displayName: label });
+      expect(res.status).toBe(201);
+      expect(res.body.data.requiresEmailVerification).toBe(true);
+      expect(res.body.data.user.emailVerified).toBe(false);
+      return { email, password, userId: res.body.data.user.id as string };
+    };
+
+    /** Clears the per-email send bookkeeping so cooldown/daily caps reset. */
+    const clearSendLimits = async (email: string) => {
+      await prisma.emailSendRequest.deleteMany({ where: { emailHash: emailHash(email) } });
+    };
+
+    beforeAll(() => {
+      prisma = app.get(PrismaService);
+    });
+
+    beforeEach(() => {
+      // Keep the per-IP limiter out of the way — it has its own test below.
+      app.get(IpRateLimitGuard).reset();
+    });
+
+    it("34. unverified login -> 403 EMAIL_NOT_VERIFIED, no cookie issued", async () => {
+      const { email, password } = await registerUnverified("unverified-login");
+      const res = await request(http).post("/api/auth/login").send({ email, password });
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe("EMAIL_NOT_VERIFIED");
+      expect(res.headers["set-cookie"]).toBeUndefined();
+    });
+
+    it("35. verify-email happy path: mail token verifies once, then login works", async () => {
+      const { email, password } = await registerUnverified("verify-happy");
+      const token = getFakeMailbox(app).extractLastToken(email);
+      expect(token).toBeDefined();
+
+      const ok = await request(http).post("/api/auth/verify-email").send({ token });
+      expect(ok.status).toBe(200);
+      expect(ok.body.data.success).toBe(true);
+
+      const loginRes = await request(http).post("/api/auth/login").send({ email, password });
+      expect(loginRes.status).toBe(200);
+      expect(loginRes.body.data.user.emailVerified).toBe(true);
+
+      // Single use: replaying the same token is rejected.
+      const replay = await request(http).post("/api/auth/verify-email").send({ token });
+      expect(replay.status).toBe(400);
+      expect(replay.body.error.code).toBe("EMAIL_VERIFICATION_TOKEN_INVALID");
+    });
+
+    it("36. verify-email with a garbage token -> 400 EMAIL_VERIFICATION_TOKEN_INVALID", async () => {
+      const res = await request(http)
+        .post("/api/auth/verify-email")
+        .send({ token: "x".repeat(43) });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("EMAIL_VERIFICATION_TOKEN_INVALID");
+    });
+
+    it("37. expired verification token -> 400 EMAIL_VERIFICATION_TOKEN_EXPIRED", async () => {
+      const { email, userId } = await registerUnverified("verify-expired");
+      const token = getFakeMailbox(app).extractLastToken(email);
+      await prisma.authToken.updateMany({
+        where: { userId, purpose: AuthTokenPurpose.EMAIL_VERIFICATION },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      const res = await request(http).post("/api/auth/verify-email").send({ token });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("EMAIL_VERIFICATION_TOKEN_EXPIRED");
+    });
+
+    it("38. duplicate registration: verified -> 409; unverified -> re-enter verification", async () => {
+      const verified = await registerFreshUser(app, "dup-verified");
+      const dupVerified = await request(http)
+        .post("/api/auth/register")
+        .send({ email: verified.email, password: "password123", displayName: "Dup" });
+      expect(dupVerified.status).toBe(409);
+      expect(dupVerified.body.error.code).toBe("EMAIL_ALREADY_REGISTERED");
+
+      const pending = await registerUnverified("dup-unverified");
+      const dupPending = await request(http)
+        .post("/api/auth/register")
+        .send({ email: pending.email, password: "other-password", displayName: "Dup2" });
+      expect(dupPending.status).toBe(201);
+      expect(dupPending.body.data.requiresEmailVerification).toBe(true);
+      // No duplicate account was created.
+      expect(dupPending.body.data.user.id).toBe(pending.userId);
+    });
+
+    it("39. resend inside the 60s cooldown -> 429 EMAIL_SEND_COOLDOWN", async () => {
+      const { email } = await registerUnverified("resend-cooldown");
+      const res = await request(http).post("/api/auth/resend-verification").send({ email });
+      expect(res.status).toBe(429);
+      expect(res.body.error.code).toBe("EMAIL_SEND_COOLDOWN");
+      expect(res.body.error.details.retryAfterSeconds).toBeGreaterThan(0);
+    });
+
+    it("40. resend invalidates the previous verification token", async () => {
+      const { email } = await registerUnverified("resend-invalidate");
+      const oldToken = getFakeMailbox(app).extractLastToken(email);
+      await clearSendLimits(email);
+
+      const resend = await request(http).post("/api/auth/resend-verification").send({ email });
+      expect(resend.status).toBe(200);
+      const newToken = getFakeMailbox(app).extractLastToken(email);
+      expect(newToken).toBeDefined();
+      expect(newToken).not.toBe(oldToken);
+
+      const oldAttempt = await request(http)
+        .post("/api/auth/verify-email")
+        .send({ token: oldToken });
+      expect(oldAttempt.status).toBe(400);
+      expect(oldAttempt.body.error.code).toBe("EMAIL_VERIFICATION_TOKEN_INVALID");
+
+      const newAttempt = await request(http)
+        .post("/api/auth/verify-email")
+        .send({ token: newToken });
+      expect(newAttempt.status).toBe(200);
+    });
+
+    it("41. 24h daily cap -> 429 EMAIL_DAILY_LIMIT_EXCEEDED", async () => {
+      const { email } = await registerUnverified("daily-cap");
+      // Backfill 4 extra sends (register already logged one) spread outside the
+      // cooldown window so the daily cap — not the cooldown — is what triggers.
+      await prisma.emailSendRequest.updateMany({
+        where: { emailHash: emailHash(email) },
+        data: { createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+      });
+      await prisma.emailSendRequest.createMany({
+        data: [3, 4, 5, 6].map((h) => ({
+          emailHash: emailHash(email),
+          purpose: AuthTokenPurpose.EMAIL_VERIFICATION,
+          createdAt: new Date(Date.now() - h * 60 * 60 * 1000),
+        })),
+      });
+      const res = await request(http).post("/api/auth/resend-verification").send({ email });
+      expect(res.status).toBe(429);
+      expect(res.body.error.code).toBe("EMAIL_DAILY_LIMIT_EXCEEDED");
+      expect(res.body.error.details.resetAt).toBeDefined();
+    });
+
+    it("42. resend for an already-verified account -> 409 EMAIL_ALREADY_VERIFIED", async () => {
+      const { email } = await registerFreshUser(app, "resend-verified");
+      await clearSendLimits(email);
+      const res = await request(http).post("/api/auth/resend-verification").send({ email });
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("EMAIL_ALREADY_VERIFIED");
+      // The 409 must not burn cooldown quota — an immediate retry stays 409, not 429.
+      const again = await request(http).post("/api/auth/resend-verification").send({ email });
+      expect(again.status).toBe(409);
+      expect(again.body.error.code).toBe("EMAIL_ALREADY_VERIFIED");
+    });
+
+    it("43. forgot-password never reveals whether the email exists", async () => {
+      // The test DB is never truncated — drop leftovers from earlier runs first.
+      await clearSendLimits(SEED_CREDENTIALS.user.email);
+      const known = await request(http)
+        .post("/api/auth/forgot-password")
+        .send({ email: SEED_CREDENTIALS.user.email });
+      const unknown = await request(http)
+        .post("/api/auth/forgot-password")
+        .send({ email: `ghost-${Date.now()}@example.com` });
+      expect(known.status).toBe(200);
+      expect(unknown.status).toBe(200);
+      expect(unknown.body).toEqual(known.body);
+      // Cleanup so later suite runs aren't rate limited for the seed user.
+      await clearSendLimits(SEED_CREDENTIALS.user.email);
+    });
+
+    it("44. full reset flow: new password works, sessions revoked, notice sent", async () => {
+      const { cookie, email, password } = await registerFreshUser(app, "reset-flow");
+
+      const forgot = await request(http).post("/api/auth/forgot-password").send({ email });
+      expect(forgot.status).toBe(200);
+      const token = getFakeMailbox(app).extractLastToken(email);
+      expect(token).toBeDefined();
+
+      // Mismatched confirmation is rejected before anything changes.
+      const mismatch = await request(http)
+        .post("/api/auth/reset-password")
+        .send({ token, newPassword: "newpassword456", confirmPassword: "different456" });
+      expect(mismatch.status).toBe(400);
+      expect(mismatch.body.error.code).toBe("PASSWORD_MISMATCH");
+
+      const reset = await request(http)
+        .post("/api/auth/reset-password")
+        .send({ token, newPassword: "newpassword456", confirmPassword: "newpassword456" });
+      expect(reset.status).toBe(200);
+
+      // Every pre-reset session is revoked (tokenVersion bump) …
+      const revoked = await request(http).get("/api/auth/me").set("Cookie", cookie);
+      expect(revoked.status).toBe(401);
+      // … the old password no longer works …
+      const oldLogin = await request(http).post("/api/auth/login").send({ email, password });
+      expect(oldLogin.status).toBe(401);
+      // … the new one does (reset itself never auto-logs-in).
+      expect(reset.headers["set-cookie"]).toBeUndefined();
+      const newLogin = await request(http)
+        .post("/api/auth/login")
+        .send({ email, password: "newpassword456" });
+      expect(newLogin.status).toBe(200);
+
+      // A "password changed" notice went out.
+      const mails = getFakeMailbox(app).mailsTo(email);
+      expect(mails.at(-1)?.subject).toContain("密碼已變更");
+
+      // Reusing the consumed token is rejected.
+      const reuse = await request(http)
+        .post("/api/auth/reset-password")
+        .send({ token, newPassword: "another-pass789", confirmPassword: "another-pass789" });
+      expect(reuse.status).toBe(400);
+      expect(reuse.body.error.code).toBe("PASSWORD_RESET_TOKEN_USED");
+    });
+
+    it("45. a newer reset link invalidates the previous one", async () => {
+      const { email } = await registerFreshUser(app, "reset-supersede");
+
+      await request(http).post("/api/auth/forgot-password").send({ email }).expect(200);
+      const oldToken = getFakeMailbox(app).extractLastToken(email);
+      await clearSendLimits(email);
+      await request(http).post("/api/auth/forgot-password").send({ email }).expect(200);
+      const newToken = getFakeMailbox(app).extractLastToken(email);
+      expect(newToken).not.toBe(oldToken);
+
+      const oldAttempt = await request(http)
+        .post("/api/auth/reset-password")
+        .send({ token: oldToken, newPassword: "newpassword456", confirmPassword: "newpassword456" });
+      expect(oldAttempt.status).toBe(400);
+      expect(oldAttempt.body.error.code).toBe("PASSWORD_RESET_TOKEN_INVALID");
+
+      const newAttempt = await request(http)
+        .post("/api/auth/reset-password")
+        .send({ token: newToken, newPassword: "newpassword456", confirmPassword: "newpassword456" });
+      expect(newAttempt.status).toBe(200);
+    });
+
+    it("46. expired reset token -> 400 PASSWORD_RESET_TOKEN_EXPIRED", async () => {
+      const { email, userId } = await registerFreshUser(app, "reset-expired");
+      await request(http).post("/api/auth/forgot-password").send({ email }).expect(200);
+      const token = getFakeMailbox(app).extractLastToken(email);
+      await prisma.authToken.updateMany({
+        where: { userId, purpose: AuthTokenPurpose.PASSWORD_RESET },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      const res = await request(http)
+        .post("/api/auth/reset-password")
+        .send({ token, newPassword: "newpassword456", confirmPassword: "newpassword456" });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("PASSWORD_RESET_TOKEN_EXPIRED");
+    });
+
+    it("47. per-IP rate limit on token/mail endpoints -> 429 TOO_MANY_REQUESTS", async () => {
+      for (let i = 0; i < 20; i++) {
+        await request(http)
+          .post("/api/auth/verify-email")
+          .send({ token: "y".repeat(43) })
+          .expect(400);
+      }
+      const res = await request(http)
+        .post("/api/auth/verify-email")
+        .send({ token: "y".repeat(43) });
+      expect(res.status).toBe(429);
+      expect(res.body.error.code).toBe("TOO_MANY_REQUESTS");
+    }, 30000);
   });
 });

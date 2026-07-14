@@ -28,6 +28,7 @@ export function toUserDto(user: User): UserDto {
     displayName: user.displayName,
     role: user.role,
     status: user.status,
+    emailVerified: user.emailVerifiedAt != null,
   };
 }
 

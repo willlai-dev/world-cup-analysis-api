@@ -11,12 +11,19 @@ import { toUserDto } from '../mappers';
 import { PrismaService } from '../prisma/prisma.service';
 import type { LoginDto } from './dto/login.dto';
 import type { RegisterDto } from './dto/register.dto';
+import { EmailFlowService } from './email-flow.service';
 import { TokenService } from './token.service';
 
 const BCRYPT_ROUNDS = 10;
 
 export function redirectPathForRole(role: UserRole): string {
   return role === UserRole.ADMIN ? '/admin/accounts' : '/matches';
+}
+
+export interface RegisterResult {
+  user: UserDto;
+  /** Always true for self-registration — the account starts unverified. */
+  requiresEmailVerification: boolean;
 }
 
 export interface LoginResult {
@@ -31,14 +38,29 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tokens: TokenService,
+    private readonly emailFlows: EmailFlowService,
   ) {}
 
-  /** Registers a normal USER. Role input is never accepted. */
-  async register(dto: RegisterDto): Promise<UserDto> {
+  /**
+   * Registers a normal USER (role input is never accepted). The account starts
+   * unverified and a verification mail is sent. Re-registering an email that
+   * is pending verification never creates a duplicate — it re-enters the
+   * verification flow instead (resend honors the cooldown silently).
+   */
+  async register(dto: RegisterDto): Promise<RegisterResult> {
     const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (existing) {
-      throw new ConflictException({ code: 'EMAIL_TAKEN', message: 'Email already registered' });
+      if (existing.emailVerifiedAt) {
+        throw new ConflictException({
+          code: 'EMAIL_ALREADY_REGISTERED',
+          message: '此 Email 已註冊,請直接登入。',
+        });
+      }
+      // Credentials of the pending account are intentionally left untouched.
+      await this.emailFlows.trySendVerification(existing);
+      return { user: toUserDto(existing), requiresEmailVerification: true };
     }
+
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
     const user = await this.prisma.user.create({
       data: {
@@ -50,7 +72,8 @@ export class AuthService {
         profile: { create: {} },
       },
     });
-    return toUserDto(user);
+    await this.emailFlows.trySendVerification(user);
+    return { user: toUserDto(user), requiresEmailVerification: true };
   }
 
   async validateAndLogin(dto: LoginDto): Promise<LoginResult> {
@@ -73,6 +96,14 @@ export class AuthService {
     const ok = await bcrypt.compare(dto.password, user.passwordHash);
     if (!ok) {
       return invalid();
+    }
+    // Correct credentials but unverified email → no token of any kind is issued.
+    // Checked after the password so unauthenticated probing can't detect it.
+    if (!user.emailVerifiedAt) {
+      throw new ForbiddenException({
+        code: 'EMAIL_NOT_VERIFIED',
+        message: 'Email 尚未完成驗證,請先完成信箱驗證後再登入。',
+      });
     }
     const { token, maxAge } = this.tokens.sign(user);
     return { user: toUserDto(user), token, maxAge, redirectPath: redirectPathForRole(user.role) };

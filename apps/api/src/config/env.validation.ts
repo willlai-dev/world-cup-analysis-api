@@ -63,6 +63,25 @@ export const envSchema = z.object({
   NEWS_API_KEY: z.string().optional().default(""),
   NEWS_API_BASE_URL: z.string().default("https://newsapi.org/v2"),
 
+  // Mail (email verification / password reset). NODE_ENV=test always forces
+  // the fake provider regardless of MAIL_PROVIDER — tests must never send mail.
+  MAIL_PROVIDER: z.enum(["smtp", "gmail", "fake"]).default("fake"),
+  SMTP_HOST: z.string().optional().default(""),
+  SMTP_PORT: z.coerce.number().int().positive().default(465),
+  SMTP_SECURE: boolFromString(true),
+  SMTP_USER: z.string().optional().default(""),
+  SMTP_APP_PASSWORD: z.string().optional().default(""),
+  MAIL_FROM_NAME: z.string().default("AI World Cup Analyst"),
+  MAIL_FROM_EMAIL: z.string().optional().default(""),
+  EMAIL_VERIFY_TOKEN_TTL_MINUTES: z.coerce.number().int().positive().default(15),
+  PASSWORD_RESET_TOKEN_TTL_MINUTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(15),
+  EMAIL_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().positive().default(60),
+  EMAIL_DAILY_LIMIT: z.coerce.number().int().positive().default(5),
+
   AI_MOCK_MODE: boolFromString(true),
 
   // AI quota (Phase 3) — per-user windows; counts successful calls only

@@ -67,9 +67,24 @@ describe('JwtAuthGuard', () => {
       displayName: 'U',
       role: UserRole.PREMIUM,
       status: UserStatus.ACTIVE,
+      tokenVersion: 0,
     });
     const { ctx, req } = buildCtx({ access_token: 'valid' });
     await expect(guard.canActivate(ctx)).resolves.toBe(true);
     expect(req.user).toMatchObject({ id: 'u1', role: UserRole.PREMIUM });
+  });
+
+  it('401 when the token predates a password reset (tokenVersion mismatch)', async () => {
+    (jwt.verifyAsync as jest.Mock).mockResolvedValue({ sub: 'u1', tv: 0 });
+    (prisma.user.findUnique as jest.Mock).mockResolvedValue({
+      id: 'u1',
+      email: 'u@e.com',
+      displayName: 'U',
+      role: UserRole.USER,
+      status: UserStatus.ACTIVE,
+      tokenVersion: 1,
+    });
+    const { ctx } = buildCtx({ access_token: 'stale' });
+    await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(UnauthorizedException);
   });
 });

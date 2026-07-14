@@ -71,6 +71,14 @@ export class JwtAuthGuard implements CanActivate {
         message: '你的帳號目前無法使用此功能。',
       });
     }
+    // Tokens minted before the last password reset carry a stale tokenVersion
+    // (missing tv = version 0) and are rejected — this is the session revoke.
+    if ((payload.tv ?? 0) !== user.tokenVersion) {
+      throw new UnauthorizedException({
+        code: 'UNAUTHORIZED',
+        message: 'Session has been revoked, please log in again',
+      });
+    }
 
     req.user = {
       id: user.id,

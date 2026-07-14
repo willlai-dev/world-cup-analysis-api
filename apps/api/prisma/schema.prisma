@@ -22,6 +22,11 @@ enum UserStatus {
   DISABLED
 }
 
+enum AuthTokenPurpose {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
 enum MatchStatus {
   SCHEDULED
   LIVE
@@ -173,18 +178,53 @@ model User {
   displayName  String
   role         UserRole   @default(USER)
   status       UserStatus @default(ACTIVE)
+  /// null = email not verified yet; login is rejected with EMAIL_NOT_VERIFIED.
+  emailVerifiedAt DateTime?
+  /// Bumped on password reset to revoke every previously-issued JWT session.
+  tokenVersion    Int       @default(0)
 
   profile         UserProfile?
   favoriteTeams   FavoriteTeam[]
   favoritePlayers FavoritePlayer[]
   aiUsageLogs     AiUsageLog[]
   championRuns    ChampionPredictionRun[]
+  authTokens      AuthToken[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([role])
   @@index([status])
+}
+
+/// Single-use, short-lived tokens for email verification & password reset.
+/// Only the SHA-256 hash of the token is stored — never the raw value.
+model AuthToken {
+  id            String           @id @default(cuid())
+  userId        String
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose       AuthTokenPurpose
+  tokenHash     String           @unique
+  expiresAt     DateTime
+  usedAt        DateTime?
+  /// Set when a newer token supersedes this one (resend / new reset request).
+  invalidatedAt DateTime?
+  createdAt     DateTime         @default(now())
+
+  @@index([userId, purpose])
+}
+
+/// Per-email send-rate bookkeeping (cooldown + daily cap). Stores only a
+/// SHA-256 hash of the lowercased email so unknown addresses can be rate
+/// limited uniformly without persisting PII — this keeps forgot-password
+/// responses identical whether or not the account exists.
+model EmailSendRequest {
+  id        String           @id @default(cuid())
+  emailHash String
+  purpose   AuthTokenPurpose
+  createdAt DateTime         @default(now())
+
+  @@index([emailHash, purpose, createdAt])
 }
 
 model UserProfile {

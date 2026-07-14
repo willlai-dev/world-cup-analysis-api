@@ -27,8 +27,16 @@ export class TokenService {
     this.maxAgeSeconds = parseDurationToSeconds(config.jwtExpiresIn);
   }
 
-  sign(user: Pick<User, 'id' | 'email' | 'role'>): { token: string; maxAge: number } {
-    const payload: JwtPayload = { sub: user.id, email: user.email, role: user.role };
+  sign(
+    user: Pick<User, 'id' | 'email' | 'role' | 'tokenVersion'>,
+  ): { token: string; maxAge: number } {
+    // tv (tokenVersion) lets a password reset revoke every earlier session.
+    const payload: JwtPayload = {
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+      tv: user.tokenVersion,
+    };
     return { token: this.jwt.sign(payload), maxAge: this.maxAgeSeconds };
   }
 }
